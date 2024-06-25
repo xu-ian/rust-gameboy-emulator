@@ -1,4 +1,6 @@
 pub mod cpu {
+    use std::num::Wrapping;
+
   
   type Register = u8;
 
@@ -25,6 +27,11 @@ pub mod cpu {
     e: Register,
     h: Register,
     l: Register,
+  }
+
+  pub struct RunningState {
+    registers: Registers,
+    memory: Memory
   }
 
   impl Registers {
@@ -76,12 +83,20 @@ pub mod cpu {
       }
     }
 
-    pub fn set_subtraction_flag(&mut self, flag: FlagActions) {
+    pub fn get_zero_flag(&mut self) -> u8 {
+      u8::from(self.f & 0b1000_0000 > 0)
+    }
+
+    pub fn set_sub_flag(&mut self, flag: FlagActions) {
       match flag {
         FlagActions::Set => self.f |= 0b0100_0000,
         FlagActions::Reset => self.f &= 0b1011_1111,
         FlagActions::Flip => self.f ^= 0b0100_0000
       }
+    }
+
+    pub fn get_sub_flag(&mut self) -> u8 {
+      u8::from(self.f & 0b0100_0000 > 0)
     }
 
     pub fn set_half_carry_flag(&mut self, flag: FlagActions) {
@@ -92,12 +107,20 @@ pub mod cpu {
       }
     }
 
+    pub fn get_half_carry_flag(&mut self) -> u8 {
+      u8::from(self.f & 0b0010_0000 > 0)
+    }
+
     pub fn set_carry_flag(&mut self, flag: FlagActions) {
       match flag {
         FlagActions::Set => self.f |= 0b0001_0000,
         FlagActions::Reset => self.f &= 0b1110_1111,
         FlagActions::Flip => self.f ^= 0b0001_0000
       }
+    }
+
+    pub fn get_carry_flag(&mut self) -> u8 {
+      u8::from(self.f & 0b0001_0000 > 0)
     }
 
     pub fn dump_registers(&mut self) {
@@ -418,10 +441,6 @@ pub mod cpu {
         Instruction::Compare(
           Dest::Reg(bits(instruction, 0, 3))
         )
-      } else if check(instruction, 1,0,0,1,1,1,1,0) {
-        Instruction::Compare(
-          Dest::HL
-        )
       } else if check(instruction, 1,1,1,1,1,1,1,0) {
         Instruction::Compare(
           Dest::Immediate
@@ -637,194 +656,754 @@ pub mod cpu {
     (byte >> pos) & bits
   }
 
-  fn perform_action(instruction: Instruction, registers: &mut Registers, memory: &mut Memory) {
+  fn check_half_carry_add(byte1: u8, byte2: u8, carry: u8) -> bool {
+    ((byte1 & 0x0F) + (byte2 & 0x0F) + carry) & 0x10 == 0x10
+  }
+
+  fn check_half_carry_sub(byte1: u8, byte2: u8, carry: u8) -> bool {
+    match (byte1 & 0x0F).checked_sub(byte2 * 0x0F) {
+      Some(_) => false,
+      None => {
+        match ((byte1 & 0x0F) + carry).checked_sub(byte2 * 0x0F) {
+          Some(_) => false,
+          None => true
+        }
+      }
+    }
+  }
+
+  impl RunningState {
+
+  fn read_register(&mut self, byte: u8) -> u8 {
+    self.registers.read_register(byte)
+  }
+
+  fn write_register(&mut self, byte: u8, value: u8) {
+    self.registers.write_register(byte, value)
+  }
+
+  fn read_memory(&mut self, position: u16) -> u8 {
+    self.memory.read_memory(position)
+  }
+
+  fn read_memory_from_pc(&mut self) -> u8 {
+    self.memory.read_memory_from_pc(&mut self.registers)
+  }
+
+  fn write_memory(&mut self, position: usize, data: u8) {
+    self.memory.write_memory(position, data)
+  }
+
+  pub fn perform_action(&mut self, instruction: Instruction) {
     match instruction {
       //Saves Immediate into location specified by HL
-      Instruction::Load(6, Dest::Immediate) => load_immediate_to_hl(registers, memory),
+      Instruction::Load(6, Dest::Immediate) => self.load_immediate_to_hl(),
       //Loads Immediate into register
-      Instruction::Load(register, Dest::Immediate) => load_immediate_to_register(registers, memory, register),
+      Instruction::Load(register, Dest::Immediate) => self.load_immediate_to_register(register),
       //Saves register value to HL memory location
-      Instruction::Load(6, Dest::Reg(register)) => save_register_to_hl(registers, memory, register),
+      Instruction::Load(6, Dest::Reg(register)) => self.save_register_to_hl(register),
       //Loads data from HL memory location to register
-      Instruction::Load(register, Dest::Reg(6)) => load_h1_to_register(registers, memory, register),
+      Instruction::Load(register, Dest::Reg(6)) => self.load_h1_to_register(register),
       //Copies data from one register to another
-      Instruction::Load(reg1, Dest::Reg(reg2)) => register_to_register_copy(registers, reg1, reg2),
+      Instruction::Load(reg1, Dest::Reg(reg2)) => self.register_to_register_copy(reg1, reg2),
       //Loads A with memory at location BC
-      Instruction::AfBC(MemAction::Load) => load_bc_address_to_a(registers, memory),
+      Instruction::AfBC(MemAction::Load) => self.load_bc_address_to_a(),
       //Saves A at memory location BC
-      Instruction::AfBC(MemAction::Save) => save_a_to_bc_address(registers, memory),
+      Instruction::AfBC(MemAction::Save) => self.save_a_to_bc_address(),
       //Loads A with memory at location DE
-      Instruction::AfDE(MemAction::Load) => load_de_address_to_a(registers, memory),
+      Instruction::AfDE(MemAction::Load) => self.load_de_address_to_a(),
       //Saves A at memory location DE
-      Instruction::AfDE(MemAction::Save) => save_a_to_de_address(registers, memory),
+      Instruction::AfDE(MemAction::Save) => self.save_a_to_de_address(),
       //Loads A with memory at location from immediate
-      Instruction::Ann(MemAction::Load) => load_immediate_address_to_a(registers, memory),
+      Instruction::Ann(MemAction::Load) => self.load_immediate_address_to_a(),
       //Saves A at memory location from immediate
-      Instruction::Ann(MemAction::Save) => save_a_to_immediate_address(registers, memory),
+      Instruction::Ann(MemAction::Save) => self.save_a_to_immediate_address(),
       //Loads A with memory at location 0xFF00 + C
-      Instruction::AXC(MemAction::Load) => load_ff_c_to_a(registers, memory),
+      Instruction::AXC(MemAction::Load) => self.load_ff_c_to_a(),
       //Saves A at memory location 0xFF00 + C
-      Instruction::AXC(MemAction::Save) => save_a_to_ff_c(registers, memory),
+      Instruction::AXC(MemAction::Save) => self.save_a_to_ff_c(),
       //Loads A with memory at location 0xFF00 + immediate
-      Instruction::AXn(MemAction::Load) => load_ff_n_to_a(registers, memory),
+      Instruction::AXn(MemAction::Load) => self.load_ff_n_to_a(),
       //Saves A at memory location 0xFF00 + immediate
-      Instruction::AXn(MemAction::Save) => save_a_to_ff_n(registers, memory),
+      Instruction::AXn(MemAction::Save) => self.save_a_to_ff_n(),
       //Loads A with memory at location HL, then decrements HL
-      Instruction::AfHLdec(MemAction::Load) => load_hl_address_to_a_dec(registers, memory),
+      Instruction::AfHLdec(MemAction::Load) => self.load_hl_address_to_a_dec(),
       //Saves A at memory location HL, then decrements HL
-      Instruction::AfHLdec(MemAction::Save) => save_a_to_hl_address_dec(registers, memory),
+      Instruction::AfHLdec(MemAction::Save) => self.save_a_to_hl_address_dec(),
       //Loads A with memory at location HL, then increments HL
-      Instruction::AfHLinc(MemAction::Load) => load_hl_address_to_a_inc(registers, memory),
+      Instruction::AfHLinc(MemAction::Load) => self.load_hl_address_to_a_inc(),
       //Saves A at memory location HL, then increments HL
-      Instruction::AfHLinc(MemAction::Save) => save_a_to_hl_address_inc(registers, memory),
+      Instruction::AfHLinc(MemAction::Save) => self.save_a_to_hl_address_inc(),
       //Loads immediate to a register pair
-      Instruction::Loadnn(Dest::RegPair(pair)) => load_immediate_to_register_pair(registers, memory, pair),
+      Instruction::Loadnn(Dest::RegPair(pair)) => self.load_immediate_to_register_pair(pair),
       //Saves Data from stack pointer to memory address at immediate
-      Instruction::SaveSPnn => save_sp_to_immediate_address(registers, memory),
-      Instruction::LoadSPHL => load_hl_to_sp(registers),
+      Instruction::SaveSPnn => self.save_sp_to_immediate_address(),
+      //Sets stack pointer to HL
+      Instruction::LoadSPHL => self.load_hl_to_sp(),
+      //Pushes data from register pair BC to stack
+      Instruction::PushStack(Dest::RegPair(RegisterPairs::BC)) => self.push_bc_to_stack(),
+      //Pushes data from register pair DE to stack
+      Instruction::PushStack(Dest::RegPair(RegisterPairs::DE)) => self.push_de_to_stack(),
+      //Pushes data from register pair HL to stack
+      Instruction::PushStack(Dest::RegPair(RegisterPairs::HL)) => self.push_hl_to_stack(),
+      //Pops stack to register pair BC
+      Instruction::PopStack(Dest::RegPair(RegisterPairs::BC)) => self.pop_stack_to_bc(),
+      //Pops stack to register pair DE
+      Instruction::PopStack(Dest::RegPair(RegisterPairs::DE)) => self.pop_stack_to_de(),      
+      //Pops stack to register pair HL
+      Instruction::PopStack(Dest::RegPair(RegisterPairs::HL)) => self.pop_stack_to_hl(),
+      //Loads adjusted stack position to HL register pair
+      Instruction::LoadStackAdj => self.load_adjusted_stack_to_hl(),
+      //Adds data from HL location to accumulator
+      Instruction::Add(Dest::Reg(6)) => self.add_hl_data_to_a(),
+      //Adds a register to accumulator
+      Instruction::Add(Dest::Reg(register)) => self.add_register_to_a(register),
+      //Adds immediate to accumulator
+      Instruction::Add(Dest::Immediate) => self.add_immediate_to_a(),
+      //Adds data from HL location and carry to accumulator
+      Instruction::AddCarry(Dest::Reg(6)) => self.add_hl_data_to_a_carry(),
+      //Adds a register and carry to accumulator
+      Instruction::AddCarry(Dest::Reg(register)) => self.add_register_to_a_carry(register),
+      //Adds immediate and carry to accumulator
+      Instruction::AddCarry(Dest::Immediate) => self.add_immediate_to_a_carry(),
+      //Subs data from HL location from accumulator
+      Instruction::Sub(Dest::Reg(6)) => self.sub_hl_data_to_a(),
+      //Subs a register from accumulator
+      Instruction::Sub(Dest::Reg(register)) => self.sub_register_to_a(register),
+      //Subs immediate from accumulator
+      Instruction::Sub(Dest::Immediate) => self.sub_immediate_to_a(),
+      //Subs data from HL location from accumulator with carry
+      Instruction::SubCarry(Dest::Reg(6)) => self.sub_hl_data_to_a_carry(),
+      //Subs a register from accumulator with carry
+      Instruction::SubCarry(Dest::Reg(register)) => self.sub_register_to_a_carry(register),
+      //Subs immediate from accumulator with carry
+      Instruction::SubCarry(Dest::Immediate) => self.sub_immediate_to_a_carry(),
+      //Compares data from HL location with accumulator
+      Instruction::Compare(Dest::Reg(6)) => self.cmp_hl_data_to_a(),
+      //Compares data from register with accumulator
+      Instruction::Compare(Dest::Reg(register)) => self.cmp_register_to_a(register),
+      //Compares data from immediate with accumulator
+      Instruction::Compare(Dest::Immediate) => self.cmp_immediate_to_a(),
+      //Increments data at address specified by hl
+      Instruction::Inc(Dest::Reg(6)) => self.inc_hl_data(),
+      //Increments specified register
+      Instruction::Inc(Dest::Reg(register)) => self.inc_register(register),
+      //Decrements data at address specified by hl
+      Instruction::Dec(Dest::Reg(6)) => self.dec_hl_data(),
+      //Decrements specified register
+      Instruction::Dec(Dest::Reg(register)) => self.dec_register(register),
+      //ANDs data from HL location with accumulator
+      Instruction::AND(Dest::Reg(6)) => self.and_hl_data_to_a(),
+      //ANDs data from register with accumulator
+      Instruction::AND(Dest::Reg(register)) => self.and_register_to_a(register),
+      //ANDs data from immediate with accumulator
+      Instruction::AND(Dest::Immediate) => self.and_immediate_to_a(),
+      //ORs data from HL location with accumulator 
+      Instruction::OR(Dest::Reg(6)) => self.or_hl_data_to_a(),
+      //ORs data from register with accumulator
+      Instruction::OR(Dest::Reg(register)) => self.or_register_to_a(register),
+      //ORs data from immediate with accumulator
+      Instruction::OR(Dest::Immediate) => self.or_immediate_to_a(),
+      //XORs data from HL location with accumulator 
+      Instruction::XOR(Dest::Reg(6)) => self.xor_hl_data_to_a(),
+      //XORs data from register with accumulator
+      Instruction::XOR(Dest::Reg(register)) => self.xor_register_to_a(register),
+      //XORs data from immediate with accumulator
+      Instruction::XOR(Dest::Immediate) => self.xor_immediate_to_a(),
+      //Flips carry flag, resets subtraction and halfcarry flags
+      Instruction::CCFlag => self.ccflag(),
+      //Sets carry flag, resets subtraction and halfcarry flags
+      Instruction::SCFlag => self.scflag(),
 
       _ => return
     }
   }
 
-  fn load_immediate_to_hl(registers: &mut Registers, memory: &mut Memory) {
-    let data = memory.read_memory_from_pc(registers);
-    memory.write_memory(usize::from(registers.get_hl_value()), data);
+  fn load_immediate_to_hl(&mut self) {
+    let data = self.read_memory_from_pc();
+    self.write_memory(usize::from(self.registers.get_hl_value()), data);
   }
 
-  fn load_immediate_to_register(registers: &mut Registers, memory: &Memory, register: Register) {
-    let data = memory.read_memory_from_pc(registers);
-    registers.write_register(register, data);
+  fn load_immediate_to_register(&mut self, register: Register) {
+    let data = self.read_memory_from_pc();
+    self.write_register(register, data);
   }
 
-  fn save_register_to_hl(registers: &mut Registers, memory: &mut Memory, register: Register) {
-    let data = registers.read_register(register);
-    memory.write_memory(usize::from(registers.get_hl_value()), data);
+  fn save_register_to_hl(&mut self, register: Register) {
+    let data = self.read_register(register);
+    self.write_memory(usize::from(self.registers.get_hl_value()), data);
   }
 
-  fn load_h1_to_register(registers: &mut Registers, memory: &mut Memory, register: Register) {
-    let data = memory.read_memory(registers.get_hl_value());
-    registers.write_register(register, data);
+  fn load_h1_to_register(&mut self, register: Register) {
+    let data = self.read_memory(self.registers.get_hl_value());
+    self.write_register(register, data);
   }
 
-  fn register_to_register_copy(registers: &mut Registers, dst: Register, src: Register) {
-    let data = registers.read_register(src);
-    registers.write_register(dst, data);
+  fn register_to_register_copy(&mut self, dst: Register, src: Register) {
+    let data = self.read_register(src);
+    self.write_register(dst, data);
   }
 
-  fn load_bc_address_to_a(registers: &mut Registers, memory: &Memory) {
-    registers.a = memory.read_memory(registers.get_bc_value());
+  fn load_bc_address_to_a(&mut self) {
+    self.registers.a = self.read_memory(self.registers.get_bc_value());
   } 
 
-  fn save_a_to_bc_address(registers: &Registers, memory: &mut Memory) {
-    memory.write_memory(usize::from(registers.get_bc_value()), registers.a);
+  fn save_a_to_bc_address(&mut self) {
+    self.write_memory(usize::from(self.registers.get_bc_value()), self.registers.a);
   }
 
-  fn load_de_address_to_a(registers: &mut Registers, memory: &Memory) {
-    registers.a = memory.read_memory(registers.get_de_value());
+  fn load_de_address_to_a(&mut self) {
+    self.registers.a = self.read_memory(self.registers.get_de_value());
   } 
 
-  fn save_a_to_de_address(registers: &Registers, memory: &mut Memory) {
-    memory.write_memory(usize::from(registers.get_de_value()), registers.a);
+  fn save_a_to_de_address(&mut self) {
+    self.write_memory(usize::from(self.registers.get_de_value()), self.registers.a);
   }
 
-  fn load_immediate_address_to_a(registers: &mut Registers, memory: &mut Memory) {
-    let leastbyte = memory.read_memory_from_pc(registers);
-    let mostbyte = memory.read_memory_from_pc(registers);
+  fn load_immediate_address_to_a(&mut self) {
+    let leastbyte = self.read_memory_from_pc();
+    let mostbyte = self.read_memory_from_pc();
     let address = Registers::join_u8(mostbyte, leastbyte);
 
-    registers.a = memory.read_memory(address);
+    self.registers.a = self.read_memory(address);
   }
 
-  fn save_a_to_immediate_address(registers: &mut Registers, memory: &mut Memory) {
-    let leastbyte = memory.read_memory_from_pc(registers);
-    let mostbyte = memory.read_memory_from_pc(registers);
+  fn save_a_to_immediate_address(&mut self) {
+    let leastbyte = self.read_memory_from_pc();
+    let mostbyte = self.read_memory_from_pc();
     let address = Registers::join_u8(mostbyte, leastbyte);
-    memory.write_memory(usize::from(address), registers.a);
+    self.write_memory(usize::from(address), self.registers.a);
   }
 
-  fn load_ff_c_to_a(registers: &mut Registers, memory: &mut Memory) {
-    let location = Registers::join_u8(0xFF, registers.c);
-    registers.a = memory.read_memory(location);
+  fn load_ff_c_to_a(&mut self) {
+    let location = Registers::join_u8(0xFF, self.registers.c);
+    self.registers.a = self.read_memory(location);
   }
 
-  fn save_a_to_ff_c(registers: &mut Registers, memory: &mut Memory) {
-    let location = Registers::join_u8(0xFF, registers.c);
-    memory.write_memory(usize::from(location), registers.a);
+  fn save_a_to_ff_c(&mut self) {
+    let location = Registers::join_u8(0xFF, self.registers.c);
+    self.write_memory(usize::from(location), self.registers.a);
   }
 
-  fn load_ff_n_to_a(registers: &mut Registers, memory: &mut Memory) {
-    let next_mem = memory.read_memory_from_pc(registers);
+  fn load_ff_n_to_a(&mut self) {
+    let next_mem = self.read_memory_from_pc();
     let location = Registers::join_u8(0xFF, next_mem);
-    registers.a = memory.read_memory(location);
+    self.registers.a = self.read_memory(location);
   }
 
-  fn save_a_to_ff_n(registers: &mut Registers, memory: &mut Memory) {
-    let next_mem = memory.read_memory_from_pc(registers);
+  fn save_a_to_ff_n(&mut self) {
+    let next_mem = self.read_memory_from_pc();
     let location = Registers::join_u8(0xFF, next_mem);
-    memory.write_memory(usize::from(location), registers.a);
+    self.write_memory(usize::from(location), self.registers.a);
   }
 
-  fn load_hl_address_to_a_dec(registers: &mut Registers, memory: &mut Memory) {
-    let mut address = registers.get_hl_value();
-    registers.a = memory.read_memory(address);
+  fn load_hl_address_to_a_dec(&mut self) {
+    let mut address = self.registers.get_hl_value();
+    self.registers.a = self.read_memory(address);
     decrement(&mut address);
-    registers.l = (address % 16) as u8;
-    registers.h = (address >> 4) as u8;
+    self.registers.l = (address % 16) as u8;
+    self.registers.h = (address >> 4) as u8;
   }
 
-  fn save_a_to_hl_address_dec(registers: &mut Registers, memory: &mut Memory) {
-    let mut address = registers.get_hl_value();
-    memory.write_memory(usize::from(address), registers.a);
+  fn save_a_to_hl_address_dec(&mut self) {
+    let mut address = self.registers.get_hl_value();
+    self.write_memory(usize::from(address), self.registers.a);
     decrement(&mut address);
-    registers.l = (address % 16) as u8;
-    registers.h = (address >> 4) as u8;
+    self.registers.l = (address % 16) as u8;
+    self.registers.h = (address >> 4) as u8;
   }
 
-  fn load_hl_address_to_a_inc(registers: &mut Registers, memory: &mut Memory) {
-    let mut address = registers.get_hl_value();
-    registers.a = memory.read_memory(address);
+  fn load_hl_address_to_a_inc(&mut self) {
+    let mut address = self.registers.get_hl_value();
+    self.registers.a = self.read_memory(address);
     increment(&mut address);
-    registers.l = (address % 16) as u8;
-    registers.h = (address >> 4) as u8;
+    self.registers.l = (address % 16) as u8;
+    self.registers.h = (address >> 4) as u8;
   }
 
-  fn save_a_to_hl_address_inc(registers: &mut Registers, memory: &mut Memory) {
-    let mut address = registers.get_hl_value();
-    memory.write_memory(usize::from(address), registers.a);
+  fn save_a_to_hl_address_inc(&mut self) {
+    let mut address = self.registers.get_hl_value();
+    self.write_memory(usize::from(address), self.registers.a);
     increment(&mut address);
-    registers.l = (address % 16) as u8;
-    registers.h = (address >> 4) as u8;
+    self.registers.l = (address % 16) as u8;
+    self.registers.h = (address >> 4) as u8;
   }
 
-  fn load_immediate_to_register_pair(registers: &mut Registers, memory: &mut Memory, pair: RegisterPairs) {
-    let lesser = memory.read_memory_from_pc(registers);
-    let greater = memory.read_memory_from_pc(registers);
+  fn load_immediate_to_register_pair(&mut self, pair: RegisterPairs) {
+    let lesser = self.read_memory_from_pc();
+    let greater = self.read_memory_from_pc();
     match pair {
-      RegisterPairs::BC => {registers.b = greater;registers.c = lesser},
-      RegisterPairs::DE => {registers.d = greater;registers.e = lesser},
-      RegisterPairs::HL => {registers.h = greater;registers.l = lesser},
+      RegisterPairs::BC => {self.registers.b = greater;self.registers.c = lesser},
+      RegisterPairs::DE => {self.registers.d = greater;self.registers.e = lesser},
+      RegisterPairs::HL => {self.registers.h = greater;self.registers.l = lesser},
     };
 
   }
 
-  fn save_sp_to_immediate_address(registers: &mut Registers, memory: &mut Memory) {
-    let lesser = memory.read_memory_from_pc(registers);
-    let greater = memory.read_memory_from_pc(registers);
+  fn save_sp_to_immediate_address(&mut self) {
+    let lesser = self.read_memory_from_pc();
+    let greater = self.read_memory_from_pc();
     let address = Registers::join_u8(greater, lesser);
-    let lsb = (registers.sp % 16) as u8;
-    let msb = (registers.sp >> 4) as u8;
-    memory.write_memory(usize::from(address), lsb);
-    memory.write_memory(usize::from(address + 1), msb);
+    let lsb = (self.registers.sp % 16) as u8;
+    let msb = (self.registers.sp >> 4) as u8;
+    self.write_memory(usize::from(address), lsb);
+    self.write_memory(usize::from(address + 1), msb);
   }
   
-  fn load_hl_to_sp(registers: &mut Registers) {
-    registers.sp = registers.get_hl_value();
+  fn load_hl_to_sp(&mut self) {
+    self.registers.sp = self.registers.get_hl_value();
   }
 
-  fn push_register_pair_to_stack(registers: &mut Registers, memory: &mut Memory) {
-    
+  fn push_bc_to_stack(&mut self) {
+    self.registers.sp -=1;
+    self.write_memory(usize::from(self.registers.sp), self.registers.b);
+    self.registers.sp -=1;
+    self.write_memory(usize::from(self.registers.sp), self.registers.c);
   }
+
+  fn push_de_to_stack(&mut self) {
+    self.registers.sp -=1;
+    self.write_memory(usize::from(self.registers.sp), self.registers.d);
+    self.registers.sp -=1;
+    self.write_memory(usize::from(self.registers.sp), self.registers.e);
+  }
+
+  fn push_hl_to_stack(&mut self) {
+    self.registers.sp -=1;
+    self.write_memory(usize::from(self.registers.sp), self.registers.h);
+    self.registers.sp -=1;
+    self.write_memory(usize::from(self.registers.sp), self.registers.l);
+  }
+
+  fn pop_stack_to_bc(&mut self) {
+    self.registers.c = self.read_memory(self.registers.sp);
+    self.registers.sp +=1;
+    self.registers.b = self.read_memory(self.registers.sp);
+    self.registers.sp +=1;
+  }
+
+  fn pop_stack_to_de(&mut self) {
+    self.registers.e = self.read_memory(self.registers.sp);
+    self.registers.sp +=1;
+    self.registers.d = self.read_memory(self.registers.sp);
+    self.registers.sp +=1;
+  }
+
+  fn pop_stack_to_hl(&mut self) {
+    self.registers.l = self.read_memory(self.registers.sp);
+    self.registers.sp +=1;
+    self.registers.h = self.read_memory(self.registers.sp);
+    self.registers.sp +=1;
+  }
+
+  fn load_adjusted_stack_to_hl(&mut self) {
+    let adjustment = self.read_memory_from_pc() as i8;
+    let mut stack_pointer = self.registers.sp;
+    if adjustment < 0 {
+      stack_pointer -= u16::from((-adjustment) as u8);
+    } else {
+      stack_pointer += u16::from(adjustment as u8);
+    }
+    self.registers.l = self.read_memory(stack_pointer);
+    self.registers.h = self.read_memory(stack_pointer+1);
+  }
+
+  fn add_register_to_a(&mut self, register: Register) {
+    let value = self.read_register(register);
+    self.add_x_to_a(value, 0);
+  }
+
+  fn add_hl_data_to_a(&mut self) {
+    let value = self.read_memory(self.registers.get_hl_value());
+    self.add_x_to_a(value, 0);
+
+  }
+
+  fn add_immediate_to_a(&mut self) {
+    let value = self.read_memory_from_pc();
+    self.add_x_to_a(value, 0);
+  }
+
+  fn add_register_to_a_carry(&mut self, register: Register) {
+    let value = self.read_register(register);
+    self.add_x_to_a(value, 1);
+  }
+
+  fn add_hl_data_to_a_carry(&mut self) {
+    let value = self.read_memory(self.registers.get_hl_value());
+    self.add_x_to_a(value, 1);
+
+  }
+
+  fn add_immediate_to_a_carry(&mut self) {
+    let value = self.read_memory_from_pc();
+    self.add_x_to_a(value, 1);
+  }
+
+  fn add_x_to_a(&mut self, add_value:u8, carry:u8) {
+    if check_half_carry_add(self.registers.a, add_value, carry) {
+      self.registers.set_half_carry_flag(FlagActions::Set);
+    } else {
+      self.registers.set_half_carry_flag(FlagActions::Reset);
+    }
+  
+    match self.registers.a.checked_add(add_value) {
+      Some(x) => {
+        match x.checked_add(carry) {
+          Some(y) => {
+            self.registers.a = y;
+            self.registers.set_carry_flag(FlagActions::Reset);
+          },
+          None => {
+            self.registers.a = u8::MIN;
+            self.registers.set_carry_flag(FlagActions::Set);
+          }
+        } 
+      },
+      None => {
+        let a = Wrapping(self.registers.a);
+        let b = Wrapping(add_value);
+        let c = Wrapping(carry);
+        self.registers.a = (a + b + c).0;
+
+        self.registers.set_carry_flag(FlagActions::Set);
+      }
+    }
+
+    if self.registers.a == 0 {
+      self.registers.set_zero_flag(FlagActions::Set);
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+
+    self.registers.set_sub_flag(FlagActions::Reset);
+  }
+
+  fn sub_register_to_a(&mut self, register: Register) {
+    let value = self.read_register(register);
+    self.sub_x_to_a(value, 0);
+  }
+
+  fn sub_immediate_to_a(&mut self) {
+    let value = self.read_memory_from_pc();
+    self.sub_x_to_a(value, 0);
+  }
+
+  fn sub_hl_data_to_a(&mut self) {
+    let value = self.read_memory(self.registers.get_hl_value());
+    self.sub_x_to_a(value, 0);
+  }
+
+  fn sub_register_to_a_carry(&mut self, register: Register) {
+    let value = self.read_register(register);
+    self.sub_x_to_a(value, 1);
+  }
+
+  fn sub_immediate_to_a_carry(&mut self) {
+    let value = self.read_memory_from_pc();
+    self.sub_x_to_a(value, 1);
+  }
+
+  fn sub_hl_data_to_a_carry(&mut self) {
+    let value = self.read_memory(self.registers.get_hl_value());
+    self.sub_x_to_a(value, 1);
+  }
+
+  fn sub_x_to_a(&mut self, sub_value:u8, carry:u8) {
+
+    if check_half_carry_sub(self.registers.a, sub_value, carry) {
+      self.registers.set_half_carry_flag(FlagActions::Set);
+    } else {
+      self.registers.set_half_carry_flag(FlagActions::Reset);
+    }
+
+    match self.registers.a.checked_sub(sub_value) {
+      Some(x) => {
+        self.registers.a = x;
+
+        self.registers.set_carry_flag(FlagActions::Reset);
+      },
+      None => {
+        match (self.registers.a + carry).checked_sub(sub_value) {
+          Some(_) => {
+            self.registers.a = u8::MIN;
+          },
+          None => {
+            let a = Wrapping(self.registers.a);
+            let b = Wrapping(sub_value);
+            let c = Wrapping(carry);
+            self.registers.a = (a - b + c).0;
+    
+            self.registers.set_carry_flag(FlagActions::Set);
+          }
+        }
+
+      }
+    }
+
+    if self.registers.a == 0 {
+      self.registers.set_zero_flag(FlagActions::Set);
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+
+    self.registers.set_sub_flag(FlagActions::Set);
+  }
+
+  fn cmp_register_to_a(&mut self, register: Register) {
+    let value = self.read_register(register);
+    self.cmp_x_to_a(value);
+  }
+
+  fn cmp_hl_data_to_a(&mut self) {
+    let value = self.read_memory(self.registers.get_hl_value());
+    self.cmp_x_to_a(value);
+  }
+
+  fn cmp_immediate_to_a(&mut self) {
+    let value = self.read_memory_from_pc();
+    self.cmp_x_to_a(value);
+  }
+
+  fn cmp_x_to_a(&mut self, cmp_value:u8) {
+    if check_half_carry_sub(self.registers.a, cmp_value, 0) {
+      self.registers.set_half_carry_flag(FlagActions::Set);
+    } else {
+      self.registers.set_half_carry_flag(FlagActions::Reset);
+    }
+
+    match self.registers.a.checked_sub(cmp_value) {
+      Some(x) => {
+        self.registers.set_carry_flag(FlagActions::Reset);
+        if x == 0 {
+          self.registers.set_zero_flag(FlagActions::Set);
+        } else {
+          self.registers.set_zero_flag(FlagActions::Reset);
+        }
+      },
+      None => {
+        self.registers.set_carry_flag(FlagActions::Set);
+        self.registers.set_zero_flag(FlagActions::Reset);
+      }
+    }
+
+    self.registers.set_sub_flag(FlagActions::Set);
+  }
+
+  fn inc_hl_data(&mut self) {
+    let value = Wrapping(self.read_memory(self.registers.get_hl_value()));
+    let one = Wrapping(1u8);
+    
+    if check_half_carry_add(value.0, 1, 0) {
+      self.registers.set_half_carry_flag(FlagActions::Set);
+    } else {
+      self.registers.set_half_carry_flag(FlagActions::Reset);      
+    }
+
+    self.write_memory(usize::from(self.registers.get_hl_value()),(value + one).0);
+    
+    self.registers.set_sub_flag(FlagActions::Reset);
+    
+    if self.read_memory(self.registers.get_hl_value()) == 0 {
+      self.registers.set_zero_flag(FlagActions::Set)
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn inc_register(&mut self, register: Register) {
+    let value = Wrapping(self.read_register(register));
+    let one = Wrapping(1u8);
+
+    if check_half_carry_add(value.0, 1, 0) {
+      self.registers.set_half_carry_flag(FlagActions::Set);
+    } else {
+      self.registers.set_half_carry_flag(FlagActions::Reset);      
+    }
+
+    self.write_register(register, (value + one).0);
+
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    if self.read_register(register) == 0 {
+      self.registers.set_zero_flag(FlagActions::Set)
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn dec_hl_data(&mut self) {
+    let value = Wrapping(self.read_memory(self.registers.get_hl_value()));
+    let one = Wrapping(1u8);
+
+    if check_half_carry_sub(value.0, 1, 0) {
+      self.registers.set_half_carry_flag(FlagActions::Set);
+    } else {
+      self.registers.set_half_carry_flag(FlagActions::Reset);      
+    }
+
+    self.write_memory(usize::from(self.registers.get_hl_value()),(value - one).0);
+
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    if self.read_memory(self.registers.get_hl_value()) == 0 {
+      self.registers.set_zero_flag(FlagActions::Set)
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn dec_register(&mut self, register: Register) {
+    let value = Wrapping(self.read_register(register));
+    let one = Wrapping(1u8);
+
+    if check_half_carry_sub(value.0, 1, 0) {
+      self.registers.set_half_carry_flag(FlagActions::Set);
+    } else {
+      self.registers.set_half_carry_flag(FlagActions::Reset);      
+    }
+
+    self.write_register(register, (value - one).0);
+
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    if self.read_register(register) == 0 {
+      self.registers.set_zero_flag(FlagActions::Set)
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn and_hl_data_to_a(&mut self) {
+    self.registers.set_carry_flag(FlagActions::Reset);
+    self.registers.set_half_carry_flag(FlagActions::Set);
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    self.registers.a &= self.read_memory(self.registers.get_hl_value());
+    if self.registers.a == 0 {
+      self.registers.set_zero_flag(FlagActions::Set);
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn and_register_to_a(&mut self, register: Register) {
+    self.registers.set_carry_flag(FlagActions::Reset);
+    self.registers.set_half_carry_flag(FlagActions::Set);
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    self.registers.a &= self.read_register(register);
+    if self.registers.a == 0 {
+      self.registers.set_zero_flag(FlagActions::Set);
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn and_immediate_to_a(&mut self) {
+    self.registers.set_carry_flag(FlagActions::Reset);
+    self.registers.set_half_carry_flag(FlagActions::Set);
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    self.registers.a &= self.read_memory_from_pc();
+    if self.registers.a == 0 {
+      self.registers.set_zero_flag(FlagActions::Set);
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn or_hl_data_to_a(&mut self) {
+    self.registers.set_carry_flag(FlagActions::Reset);
+    self.registers.set_half_carry_flag(FlagActions::Reset);
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    self.registers.a |= self.read_memory(self.registers.get_hl_value());
+    if self.registers.a == 0 {
+      self.registers.set_zero_flag(FlagActions::Set);
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn or_register_to_a(&mut self, register: Register) {
+    self.registers.set_carry_flag(FlagActions::Reset);
+    self.registers.set_half_carry_flag(FlagActions::Reset);
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    self.registers.a |= self.read_register(register);
+    if self.registers.a == 0 {
+      self.registers.set_zero_flag(FlagActions::Set);
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn or_immediate_to_a(&mut self) {
+    self.registers.set_carry_flag(FlagActions::Reset);
+    self.registers.set_half_carry_flag(FlagActions::Reset);
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    self.registers.a |= self.read_memory_from_pc();
+    if self.registers.a == 0 {
+      self.registers.set_zero_flag(FlagActions::Set);
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn xor_hl_data_to_a(&mut self) {
+    self.registers.set_carry_flag(FlagActions::Reset);
+    self.registers.set_half_carry_flag(FlagActions::Reset);
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    self.registers.a ^= self.read_memory(self.registers.get_hl_value());
+    if self.registers.a == 0 {
+      self.registers.set_zero_flag(FlagActions::Set);
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn xor_register_to_a(&mut self, register: Register) {
+    self.registers.set_carry_flag(FlagActions::Reset);
+    self.registers.set_half_carry_flag(FlagActions::Reset);
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    self.registers.a ^= self.read_register(register);
+    if self.registers.a == 0 {
+      self.registers.set_zero_flag(FlagActions::Set);
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn xor_immediate_to_a(&mut self) {
+    self.registers.set_carry_flag(FlagActions::Reset);
+    self.registers.set_half_carry_flag(FlagActions::Reset);
+    self.registers.set_sub_flag(FlagActions::Reset);
+
+    self.registers.a ^= self.read_memory_from_pc();
+    if self.registers.a == 0 {
+      self.registers.set_zero_flag(FlagActions::Set);
+    } else {
+      self.registers.set_zero_flag(FlagActions::Reset);
+    }
+  }
+
+  fn ccflag(&mut self) {
+    self.registers.set_carry_flag(FlagActions::Flip);
+    self.registers.set_half_carry_flag(FlagActions::Reset);
+    self.registers.set_sub_flag(FlagActions::Reset);
+  }
+
+  fn scflag(&mut self) {
+    self.registers.set_carry_flag(FlagActions::Set);
+    self.registers.set_half_carry_flag(FlagActions::Reset);
+    self.registers.set_sub_flag(FlagActions::Reset);
+  }
+
+}
 
   pub fn run() {
     let mut registers = Registers {
@@ -842,12 +1421,16 @@ pub mod cpu {
     registers.dump_registers();
     memory.write_memory(usize::from(registers.pc), 0b0000_0100);
     let data = memory.read_memory_from_pc(&mut registers);
-    perform_action(Instruction::translate(data), &mut registers, &mut memory);
-    registers.set_zero_flag(FlagActions::Flip);
-    registers.set_subtraction_flag(FlagActions::Set);
-    registers.set_half_carry_flag(FlagActions::Flip);
-    registers.set_carry_flag(FlagActions::Reset);
-    registers.dump_registers();
+    let mut state = RunningState {
+      registers,
+      memory,
+    };
+    state.perform_action(Instruction::translate(data));
+    state.registers.set_zero_flag(FlagActions::Flip);
+    state.registers.set_sub_flag(FlagActions::Set);
+    state.registers.set_half_carry_flag(FlagActions::Flip);
+    state.registers.set_carry_flag(FlagActions::Reset);
+    state.registers.dump_registers();
     println!("{data}");
   }
 
