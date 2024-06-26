@@ -6,6 +6,7 @@ use instruction::Dest;
 use instruction::Instruction;
 use instruction::MemAction;
 use instruction::RegisterPairs;
+use instruction::Cond;
 use memory::Memory;
 use registers::FlagActions;
 use registers::Register;
@@ -15,7 +16,7 @@ use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
 
-use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyModifiers};
+use crossterm::event::{read, Event, KeyCode, KeyEvent};
 
 fn check_half_carry_add(byte1: u8, byte2: u8, carry: u8) -> bool {
     ((byte1 & 0x0F) + (byte2 & 0x0F) + carry) & 0x10 == 0x10
@@ -92,6 +93,9 @@ impl RunningState {
     }
 
     fn read_memory(&mut self, position: u16) -> u8 {
+        if position == 0xff00 {
+            println!("Reading from joypad!");
+        }
         self.memory.read_memory(position)
     }
 
@@ -104,8 +108,8 @@ impl RunningState {
     }
 
     fn read_memory_from_pc(&mut self) -> u8 {
+        print!("PC: {:04x}, ", self.registers.pc);
         let data = self.memory.read_memory_from_pc(&mut self.registers);
-        //println!("{:04x}", self.registers.pc);
         //println!("{:#04x}", data);
         data
     }
@@ -114,8 +118,30 @@ impl RunningState {
         self.memory.write_memory(position, data)
     }
 
+    fn dump_tilemap(&mut self) {
+        println!("Area 0");
+        for i in 0x9800u16..0x9c00u16 {
+            let x = self.read_memory(i);
+            if i % 32 == 31 {
+                println!("{} ", x);
+            } else {
+                print!("{} ", x);
+            }
+        }
+
+        println!("Area 1");
+        for i in 0x9c00u16..0xa000u16 {
+            let x = self.read_memory(i);
+            if i % 32 == 31 {
+                println!("{} ", x);
+            } else {
+                print!("{} ", x);
+            }
+        }
+    }
+
     pub fn perform_action(&mut self, instruction: Instruction) {
-        //println!("{:?}", instruction);
+        println!("Action: {:?}", instruction);
         match instruction {
             //Saves Immediate into location specified by HL
             Instruction::Load(6, Dest::Immediate) => self.load_immediate_to_hl(),
@@ -169,12 +195,16 @@ impl RunningState {
             Instruction::PushStack(Dest::RegPair(RegisterPairs::DE)) => self.push_de_to_stack(),
             //Pushes data from register pair HL to stack
             Instruction::PushStack(Dest::RegPair(RegisterPairs::HL)) => self.push_hl_to_stack(),
+            //Pushes data from register pair AF to stack
+            Instruction::PushStack(Dest::RegPair(RegisterPairs::AF)) => self.push_af_to_stack(),
             //Pops stack to register pair BC
             Instruction::PopStack(Dest::RegPair(RegisterPairs::BC)) => self.pop_stack_to_bc(),
             //Pops stack to register pair DE
             Instruction::PopStack(Dest::RegPair(RegisterPairs::DE)) => self.pop_stack_to_de(),
             //Pops stack to register pair HL
             Instruction::PopStack(Dest::RegPair(RegisterPairs::HL)) => self.pop_stack_to_hl(),
+            //Pops stack to register pair AF
+            Instruction::PopStack(Dest::RegPair(RegisterPairs::AF)) => self.pop_stack_to_af(),
             //Loads adjusted stack position to HL register pair
             Instruction::LoadStackAdj => self.load_adjusted_stack_to_hl(),
             //Adds data from HL location to accumulator
@@ -308,19 +338,19 @@ impl RunningState {
             //Jumps the program counter to hl data
             Instruction::Jump(Dest::HL) => self.jump_to_hl_data(),
             //Jumps program counter to 16 bit immediate if the iszero check matches the zero flag
-            Instruction::JumpCond(iszero, Dest::Immediate) => self.jump_cond_immediate(iszero),
+            Instruction::JumpCond(cond) => self.jump_cond_immediate(cond),
             //Jumps program counter to relative immediate position
             Instruction::JumpRel => self.jump_rel_immediate(),
             //Jumps program counter to relative immediate position if iszero matches the zero flag
-            Instruction::JumpRelCond(iszero) => self.jump_rel_cond_immediate(iszero),
+            Instruction::JumpRelCond(cond) => self.jump_rel_cond_immediate(cond),
             //Unconditional Function call to immediate
-            Instruction::Call(Dest::Immediate) => self.call_immediate(),
+            Instruction::Call => self.call_immediate(),
             //Function call if iszero matches the zero flag
-            Instruction::CondCall(iszero, Dest::Immediate) => self.call_cond_immediate(iszero),
+            Instruction::CondCall(cond) => self.call_cond_immediate(cond),
             //Returns from function call
             Instruction::Ret => self.ret(),
             //Conditional returns from function call if iszero matches zero flag
-            Instruction::CondRet(iszero) => self.ret_cond(iszero),
+            Instruction::CondRet(cond) => self.ret_cond(cond),
             //Unconditional return from function call and enables interrupts
             Instruction::RetI => self.ret_interrupt_handler(),
             //Function call to specific area specified by location
@@ -464,6 +494,9 @@ impl RunningState {
             RegisterPairs::HL => {
                 self.registers.h = greater;
                 self.registers.l = lesser
+            },
+            RegisterPairs::AF => {
+                self.registers.sp = Registers::join_u8(greater, lesser);
             }
         };
     }
@@ -495,12 +528,19 @@ impl RunningState {
         self.registers.sp -= 1;
         self.write_memory(usize::from(self.registers.sp), self.registers.e);
     }
-
+   
     fn push_hl_to_stack(&mut self) {
         self.registers.sp -= 1;
         self.write_memory(usize::from(self.registers.sp), self.registers.h);
         self.registers.sp -= 1;
         self.write_memory(usize::from(self.registers.sp), self.registers.l);
+    }
+
+    fn push_af_to_stack(&mut self) {
+        self.registers.sp -= 1;
+        self.write_memory(usize::from(self.registers.sp), self.registers.a);
+        self.registers.sp -= 1;
+        self.write_memory(usize::from(self.registers.sp), self.registers.f);
     }
 
     fn pop_stack_to_bc(&mut self) {
@@ -521,6 +561,13 @@ impl RunningState {
         self.registers.l = self.read_memory(self.registers.sp);
         self.registers.sp += 1;
         self.registers.h = self.read_memory(self.registers.sp);
+        self.registers.sp += 1;
+    }
+
+    fn pop_stack_to_af(&mut self) {
+        self.registers.f = self.read_memory(self.registers.sp);
+        self.registers.sp += 1;
+        self.registers.a = self.read_memory(self.registers.sp);
         self.registers.sp += 1;
     }
 
@@ -942,6 +989,7 @@ impl RunningState {
             RegisterPairs::BC => self.modify_bc(1),
             RegisterPairs::DE => self.modify_de(1),
             RegisterPairs::HL => self.modify_hl(1),
+            RegisterPairs::AF => self.registers.sp+=1,
         }
     }
 
@@ -950,6 +998,7 @@ impl RunningState {
             RegisterPairs::BC => self.modify_bc(-1),
             RegisterPairs::DE => self.modify_de(-1),
             RegisterPairs::HL => self.modify_hl(-1),
+            RegisterPairs::AF => self.registers.sp-=1,
         }
     }
 
@@ -958,6 +1007,7 @@ impl RunningState {
             RegisterPairs::BC => self.add_value_to_hl(self.registers.get_bc_value()),
             RegisterPairs::DE => self.add_value_to_hl(self.registers.get_de_value()),
             RegisterPairs::HL => self.add_value_to_hl(self.registers.get_hl_value()),
+            RegisterPairs::AF => self.add_value_to_hl(self.registers.sp),
         }
     }
 
@@ -1216,8 +1266,17 @@ impl RunningState {
         self.registers.pc = Registers::join_u8(msb, lsb);
     }
 
-    fn jump_cond_immediate(&mut self, iszero: bool) {
-        if self.registers.get_zero_flag() ^ u8::from(iszero) == 0 {
+    fn jump_cond_immediate(&mut self, cond: Cond) {
+        let zero_flag = self.registers.get_zero_flag();
+        let carry_flag = self.registers.get_carry_flag();
+        let perform_action;
+        match cond {
+            Cond::NZ => perform_action = zero_flag != 0,
+            Cond::Z => perform_action = zero_flag == 0,
+            Cond::NC => perform_action = carry_flag != 0,
+            Cond::C => perform_action = carry_flag == 0            
+        }
+        if perform_action {
             let lsb = self.read_memory_from_pc();
             let msb = self.read_memory_from_pc();
             self.registers.pc = Registers::join_u8(msb, lsb);
@@ -1233,8 +1292,17 @@ impl RunningState {
         }
     }
 
-    fn jump_rel_cond_immediate(&mut self, iszero: bool) {
-        if self.registers.get_zero_flag() ^ u8::from(iszero) == 0 {
+    fn jump_rel_cond_immediate(&mut self, cond: Cond) {
+        let zero_flag = self.registers.get_zero_flag();
+        let carry_flag = self.registers.get_carry_flag();
+        let perform_action;
+        match cond {
+            Cond::NZ => perform_action = zero_flag != 0,
+            Cond::Z => perform_action = zero_flag == 0,
+            Cond::NC => perform_action = carry_flag != 0,
+            Cond::C => perform_action = carry_flag == 0            
+        }
+        if perform_action {
             let rel = self.read_memory_from_pc() as i8;
             if rel > 0 {
                 self.registers.pc += rel as u16;
@@ -1260,8 +1328,17 @@ impl RunningState {
         self.registers.pc = Registers::join_u8(msb, lsb);
     }
 
-    fn call_cond_immediate(&mut self, iszero: bool) {
-        if self.registers.get_zero_flag() ^ u8::from(iszero) == 0 {
+    fn call_cond_immediate(&mut self, cond: Cond) {
+        let zero_flag = self.registers.get_zero_flag();
+        let carry_flag = self.registers.get_carry_flag();
+        let perform_action;
+        match cond {
+            Cond::NZ => perform_action = zero_flag != 0,
+            Cond::Z => perform_action = zero_flag == 0,
+            Cond::NC => perform_action = carry_flag != 0,
+            Cond::C => perform_action = carry_flag == 0            
+        }
+        if perform_action {
             let lsb = self.read_memory_from_pc();
             let msb = self.read_memory_from_pc();
             self.registers.sp -= 1;
@@ -1286,8 +1363,17 @@ impl RunningState {
         self.registers.pc = Registers::join_u8(msb, lsb);
     }
 
-    fn ret_cond(&mut self, iszero: bool) {
-        if self.registers.get_zero_flag() ^ u8::from(iszero) == 0 {
+    fn ret_cond(&mut self, cond: Cond) {
+        let zero_flag = self.registers.get_zero_flag();
+        let carry_flag = self.registers.get_carry_flag();
+        let perform_action;
+        match cond {
+            Cond::NZ => perform_action = zero_flag != 0,
+            Cond::Z => perform_action = zero_flag == 0,
+            Cond::NC => perform_action = carry_flag != 0,
+            Cond::C => perform_action = carry_flag == 0            
+        }
+        if perform_action {
             let lsb = self.read_memory(self.registers.sp);
             self.registers.sp += 1;
             let msb = self.read_memory(self.registers.sp);
@@ -1352,7 +1438,7 @@ impl RunningState {
     }
 
     fn ei(&mut self) {
-        println!("Interrupts enabled");
+        //println!("Interrupts enabled");
         self.interrupts = true;
     }
 }
@@ -1410,13 +1496,17 @@ pub fn run(mut state: RunningState) {
         }
     });
 
-    loop {
-    //for _ in 1..500 {
+    //loop {
+    //let mut arr = [0u16; 500];
+    for _ in 1..500 {
+        //arr[i] = state.registers.pc;
         let data = state.read_memory_from_pc();
         state.perform_action(Instruction::translate(data));
         //let inter = state.interrupts;
         //println!("IME Allow Interrupt status {inter}, Interrupts: {:04x}", state.read_interrupt_enable() & state.read_interrupt_flags());
     }
     //state.registers.dump_registers();
+    //state.dump_tilemap();
+    //println!("{:?}", arr);
 }
 
