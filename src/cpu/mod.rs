@@ -13,6 +13,9 @@ use registers::Registers;
 use std::num::Wrapping;
 use std::sync::Arc;
 use std::sync::Mutex;
+use std::thread;
+
+use crossterm::event::{read, Event, KeyCode, KeyEvent, KeyModifiers};
 
 fn check_half_carry_add(byte1: u8, byte2: u8, carry: u8) -> bool {
     ((byte1 & 0x0F) + (byte2 & 0x0F) + carry) & 0x10 == 0x10
@@ -72,6 +75,10 @@ impl RunningState {
         }
     }
 
+    pub fn set_memory(&mut self, mem: Arc<Mutex<Box<[u8; 0x10000]>>>) {
+        self.memory.data = mem;
+    }
+
     pub fn get_memory_copy(&self) -> Arc<Mutex<Box<[u8; 0x10000]>>> {
         Arc::clone(&self.memory.data)
     }
@@ -88,8 +95,19 @@ impl RunningState {
         self.memory.read_memory(position)
     }
 
+    fn read_interrupt_enable(&mut self) -> u8 {
+        self.read_memory(0xFFFF)
+    }
+
+    fn read_interrupt_flags(&mut self) -> u8 {
+        self.read_memory(0xFF0F)
+    }
+
     fn read_memory_from_pc(&mut self) -> u8 {
-        self.memory.read_memory_from_pc(&mut self.registers)
+        let data = self.memory.read_memory_from_pc(&mut self.registers);
+        //println!("{:04x}", self.registers.pc);
+        //println!("{:#04x}", data);
+        data
     }
 
     fn write_memory(&mut self, position: usize, data: u8) {
@@ -97,6 +115,7 @@ impl RunningState {
     }
 
     pub fn perform_action(&mut self, instruction: Instruction) {
+        //println!("{:?}", instruction);
         match instruction {
             //Saves Immediate into location specified by HL
             Instruction::Load(6, Dest::Immediate) => self.load_immediate_to_hl(),
@@ -1328,42 +1347,76 @@ impl RunningState {
     }
 
     fn di(&mut self) {
+        //println!("Interrupts disabled");
         self.interrupts = false;
     }
 
     fn ei(&mut self) {
+        println!("Interrupts enabled");
         self.interrupts = true;
     }
 }
 
-pub fn run() {
-    let mut registers = Registers {
-        pc: 0b1111_1111_1111_1111,
-        sp: 0b1010_0101_1001_0110,
-        a: 0b0000_1111,
-        f: 0b10100101,
-        b: 0b1000_1111,
-        c: 0b0001_1111,
-        d: 0b0100_1111,
-        e: 0b0010_1111,
-        h: 0b0010_1111,
-        l: 0b1000_1111,
-    };
-    let mut memory = Memory::new();
+pub fn run(mut state: RunningState) {
 
-    registers.dump_registers();
-    memory.write_memory(usize::from(registers.pc), 0b0000_0100);
-    let data = memory.read_memory_from_pc(&mut registers);
-    let mut state = RunningState {
-        registers,
-        memory,
-        interrupts: false,
-    };
-    state.perform_action(Instruction::translate(data));
-    state.registers.modify_zero_flag(FlagActions::Flip);
-    state.registers.modify_sub_flag(FlagActions::Set);
-    state.registers.modify_half_carry_flag(FlagActions::Flip);
-    state.registers.modify_carry_flag(FlagActions::Reset);
-    state.registers.dump_registers();
-    println!("{data}");
+    let arccopymem = state.get_memory_copy();
+
+    //Creates the key input thread
+    thread::spawn(move || {
+        let mut memcpy = Memory {
+            data: arccopymem
+        };
+
+        loop {
+            match read().unwrap() {
+                Event::Key(KeyEvent {
+                    code: KeyCode::Up,
+                    ..
+                }) => memcpy.write_memory(0xff00, 0b0001_0100),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Down,
+                    ..
+                }) => memcpy.write_memory(0xff00, 0b0001_1000),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Left,
+                    ..
+                }) => memcpy.write_memory(0xff00, 0b0001_0010),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Right,
+                    ..
+                }) => memcpy.write_memory(0xff00, 0b0001_0001),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char('z'),
+                    ..
+                }) => memcpy.write_memory(0xff00, 0b0010_0010),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Char('x'),
+                    ..
+                }) => memcpy.write_memory(0xff00, 0b0010_0001),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Enter,
+                    ..
+                }) => memcpy.write_memory(0xff00, 0b0010_1000),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Backspace,
+                    ..
+                }) => memcpy.write_memory(0xff00, 0b0010_0100),
+                Event::Key(KeyEvent {
+                    code: KeyCode::Esc,
+                    ..
+                }) => break,
+                _ => (),
+            }    
+        }
+    });
+
+    loop {
+    //for _ in 1..500 {
+        let data = state.read_memory_from_pc();
+        state.perform_action(Instruction::translate(data));
+        //let inter = state.interrupts;
+        //println!("IME Allow Interrupt status {inter}, Interrupts: {:04x}", state.read_interrupt_enable() & state.read_interrupt_flags());
+    }
+    //state.registers.dump_registers();
 }
+

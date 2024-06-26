@@ -1,25 +1,27 @@
 
 use super::registers::Register;
 
+#[derive(Debug, PartialEq)]
 pub enum RegisterPairs {
   BC,
   DE,
   HL
 }
 
-
+#[derive(Debug, PartialEq)]
 pub enum MemAction {
   Save,
   Load
 }
 
+#[derive(Debug, PartialEq)]
 pub enum Dest {
   Reg(Register),
   RegPair(RegisterPairs),
   HL,
   Immediate,
 }
-
+#[derive(Debug, PartialEq)]
 pub enum Instruction {
   //Loads the specified register with the data from the destination
   Load(Register, Dest),
@@ -146,12 +148,12 @@ pub enum Instruction {
 fn check(instruction:u8, b7:u8, b6:u8, b5:u8, b4:u8, b3:u8, b2:u8, b1:u8, b0:u8) -> bool {
   if (b0 == 2 || bits(instruction.clone(), 0, 1) == b0) &&
      (b1 == 2 || bits(instruction.clone(), 1, 1) == b1) &&
-     (b1 == 2 || bits(instruction.clone(), 2, 1) == b2) &&
-     (b1 == 2 || bits(instruction.clone(), 3, 1) == b3) &&
-     (b1 == 2 || bits(instruction.clone(), 4, 1) == b4) &&
-     (b1 == 2 || bits(instruction.clone(), 5, 1) == b5) &&
-     (b1 == 2 || bits(instruction.clone(), 6, 1) == b6) &&
-     (b1 == 2 || bits(instruction.clone(), 7, 1) == b7) {
+     (b2 == 2 || bits(instruction.clone(), 2, 1) == b2) &&
+     (b3 == 2 || bits(instruction.clone(), 3, 1) == b3) &&
+     (b4 == 2 || bits(instruction.clone(), 4, 1) == b4) &&
+     (b5 == 2 || bits(instruction.clone(), 5, 1) == b5) &&
+     (b6 == 2 || bits(instruction.clone(), 6, 1) == b6) &&
+     (b7 == 2 || bits(instruction.clone(), 7, 1) == b7) {
     true
   } else {
     false
@@ -173,12 +175,12 @@ impl Instruction {
   pub fn translate(instruction: u8) -> Instruction {
     if check(instruction,0,1,2,2,2,2,2,2) {
       Instruction::Load(
-        bits(instruction, 3, 3),
-        Dest::Reg(bits(instruction, 0, 3))
+        bits(instruction, 3, 0b0000_0111),
+        Dest::Reg(bits(instruction, 0, 0b0000_0111))
       )
     } else if check(instruction, 0,0,2,2,2,1,1,0) {
       Instruction::Load(
-        bits(instruction, 3, 3),
+        bits(instruction, 3, 0b0000_0111),
         Dest::Immediate
       )
     } else if check(instruction, 0,0,0,0,1,0,1,0) {
@@ -238,7 +240,7 @@ impl Instruction {
         MemAction::Save
       )
     } else if check(instruction, 0,0,2,2,0,0,0,1) {
-      let pair = get_register_pair(bits(instruction, 4, 2));
+      let pair = get_register_pair(bits(instruction, 4, 0b0000_0011));
 
       Instruction::Loadnn(
         Dest::RegPair(pair)
@@ -248,13 +250,13 @@ impl Instruction {
     } else if check(instruction, 1,1,1,1,1,0,0,1) {
       Instruction::LoadSPHL
     } else if check(instruction, 1,1,2,2,0,1,0,1) {
-      let pair = get_register_pair(bits(instruction, 4, 2));
+      let pair = get_register_pair(bits(instruction, 4, 0b0000_0011));
       
       Instruction::PushStack(
         Dest::RegPair(pair)
       )
     } else if check(instruction, 1,1,2,2,0,0,0,1) {
-      let pair = get_register_pair(bits(instruction, 4, 2));
+      let pair = get_register_pair(bits(instruction, 4, 0b0000_0011));
 
       Instruction::PopStack(
         Dest::RegPair(pair)
@@ -263,7 +265,7 @@ impl Instruction {
       Instruction::LoadStackAdj
     } else if check(instruction, 1,0,0,0,0,2,2,2) {
       Instruction::Add(
-        Dest::Reg(bits(instruction, 0, 3))
+        Dest::Reg(bits(instruction, 0, 0b0000_0111))
       )
     } else if check(instruction, 1,1,0,0,0,1,1,0) {
       Instruction::Add(
@@ -271,7 +273,7 @@ impl Instruction {
       )
     } else if check(instruction, 1,0,0,0,1,2,2,2) {
       Instruction::AddCarry(
-        Dest::Reg(bits(instruction, 0, 3))
+        Dest::Reg(bits(instruction, 0, 0b0000_0111))
       )
     } else if check(instruction, 1,1,0,0,1,1,1,0) {
       Instruction::AddCarry(
@@ -279,7 +281,7 @@ impl Instruction {
       )
     } else if check(instruction, 1,0,0,1,0,2,2,2) {
       Instruction::Sub(
-        Dest::Reg(bits(instruction, 0, 3))
+        Dest::Reg(bits(instruction, 0, 0b0000_0111))
       )
     } else if check(instruction, 1,1,0,1,0,1,1,0) {
       Instruction::Sub(
@@ -287,7 +289,7 @@ impl Instruction {
       )        
     } else if check(instruction, 1,0,0,1,1,2,2,2) {
       Instruction::SubCarry(
-        Dest::Reg(bits(instruction, 0, 3))
+        Dest::Reg(bits(instruction, 0, 0b0000_0111))
       )
     } else if check(instruction, 1,1,0,1,1,1,1,0) {
       Instruction::SubCarry(
@@ -295,7 +297,7 @@ impl Instruction {
       )        
     } else if check(instruction, 1,0,1,1,1,2,2,2) {
       Instruction::Compare(
-        Dest::Reg(bits(instruction, 0, 3))
+        Dest::Reg(bits(instruction, 0, 0b0000_0111))
       )
     } else if check(instruction, 1,1,1,1,1,1,1,0) {
       Instruction::Compare(
@@ -303,15 +305,15 @@ impl Instruction {
       )
     } else if check(instruction, 0,0,2,2,2,1,0,0) {
       Instruction::Inc(
-        Dest::Reg(bits(instruction, 3, 3))
+        Dest::Reg(bits(instruction, 3, 0b0000_0111))
       )
     } else if check(instruction, 0,0,2,2,2,1,0,1) {
       Instruction::Dec(
-        Dest::Reg(bits(instruction, 3, 3))
+        Dest::Reg(bits(instruction, 3, 0b0000_0111))
       )
     } else if check(instruction, 1,0,1,0,0,2,2,2) {
       Instruction::AND(
-        Dest::Reg(bits(instruction,0,3))
+        Dest::Reg(bits(instruction,0,0b0000_0111))
       )
     } else if check(instruction, 1,1,1,0,0,1,1,0) {
       Instruction::AND(
@@ -319,7 +321,7 @@ impl Instruction {
       )        
     } else if check(instruction, 1,0,1,1,0,2,2,2) {
       Instruction::OR(
-        Dest::Reg(bits(instruction, 0, 3))
+        Dest::Reg(bits(instruction, 0, 0b0000_0111))
       )
     } else if check(instruction, 1,1,1,1,0,1,1,0) {
       Instruction::OR(
@@ -327,7 +329,7 @@ impl Instruction {
       )        
     } else if check(instruction, 1,0,1,0,1,2,2,2) {
       Instruction::XOR(
-        Dest::Reg(bits(instruction,0,3))
+        Dest::Reg(bits(instruction,0,0b0000_0111))
       )
     } else if check(instruction, 1,1,1,0,1,1,1,0) {
       Instruction::XOR(
@@ -342,17 +344,17 @@ impl Instruction {
     } else if check(instruction, 0,0,1,0,1,1,1,1) {
       Instruction::CmpA
     } else if check(instruction, 0,0,2,2,0,0,1,1) {
-      let pair = get_register_pair(bits(instruction, 4, 2));
+      let pair = get_register_pair(bits(instruction, 4, 0b0000_0011));
       Instruction::Inc16(
         Dest::RegPair(pair)
       )
     } else if check(instruction, 0,0,2,2,1,0,1,1) {
-      let pair = get_register_pair(bits(instruction, 4, 2));
+      let pair = get_register_pair(bits(instruction, 4, 0b0000_0011));
       Instruction::Dec16(
         Dest::RegPair(pair)
       )
     } else if check(instruction, 0,0,2,2,1,0,0,1) {
-      let pair = get_register_pair(bits(instruction, 4, 2));
+      let pair = get_register_pair(bits(instruction, 4, 0b0000_0011));
       Instruction::Add16(
         Dest::RegPair(pair)
       )
@@ -406,7 +408,7 @@ impl Instruction {
       Instruction::HALT
     } else if check(instruction, 1,1,1,1,0,0,1,1) {
       Instruction::DI
-    } else if check(instruction, 1,1,1,0,1,0,1,1) {
+    } else if check(instruction, 1,1,1,1,1,0,1,1) {
       Instruction::EI
     } else {
       Instruction::NOP
@@ -472,7 +474,81 @@ impl Instruction {
 /*Gets a specified number of bits from a byte starting from a position
   Ex: byte:01101001, pos:3, bits: 2
   Returns 0b01, the 4th bit(1) and 5th bit(0) from the right from the byte */
-fn bits(byte:u8, pos: i32, bits: u8) -> u8 {
+fn bits(byte:u8, pos: u8, bits: u8) -> u8 {
+  //println!("Number:{:b}, Position:{}, bits read:{:b}", byte, pos, bits);
   (byte >> pos) & bits
 }
 
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn correct_bitcheck() {
+    let bitarray = [0b0000_0001, 0b0000_0010, 0b0000_0100, 0b0000_1000, 
+                              0b0001_0000, 0b0010_0000, 0b0100_0000, 0b1000_0000];
+
+    for i in 0u8..7u8 {
+      for j in 0u8..7u8 {
+        if i == j {
+          assert_eq!(bits(bitarray[usize::from(i)], j, 1), 1, "Checking whether bit {j} of {:b} is 1", bitarray[usize::from(i)]);
+        } else {
+          assert_eq!(bits(bitarray[usize::from(i)], j, 1), 0, "Checking whether bit {j} of {:b} is 0", bitarray[usize::from(i)]);
+        }
+      }
+    }
+
+  }
+
+  #[test]
+  fn correct_instruction_single_bitcheck() {
+    let bitarray = [0b0000_0001, 0b0000_0010, 0b0000_0100, 0b0000_1000, 
+                              0b0001_0000, 0b0010_0000, 0b0100_0000, 0b1000_0000];
+      assert_eq!(check(bitarray[0],0,0,0,0,0,0,0,1), true, "Hard comparison does not work for {:b}", bitarray[0]);
+      assert_eq!(check(bitarray[1],0,0,0,0,0,0,1,0), true, "Hard comparison does not work for {:b}", bitarray[1]);
+      assert_eq!(check(bitarray[2],0,0,0,0,0,1,0,0), true, "Hard comparison does not work for {:b}", bitarray[2]);
+      assert_eq!(check(bitarray[3],0,0,0,0,1,0,0,0), true, "Hard comparison does not work for {:b}", bitarray[3]);
+      assert_eq!(check(bitarray[4],0,0,0,1,0,0,0,0), true, "Hard comparison does not work for {:b}", bitarray[4]);
+      assert_eq!(check(bitarray[5],0,0,1,0,0,0,0,0), true, "Hard comparison does not work for {:b}", bitarray[5]);
+      assert_eq!(check(bitarray[6],0,1,0,0,0,0,0,0), true, "Hard comparison does not work for {:b}", bitarray[6]);
+      assert_eq!(check(bitarray[7],1,0,0,0,0,0,0,0), true, "Hard comparison does not work for {:b}", bitarray[7]);
+  }
+
+  #[test]
+  fn correct_instruction_dynamic_bitcheck() {
+    let bitarray = [0b0000_0001, 0b0000_0010, 0b0000_0100, 0b0000_1000, 
+                              0b0001_0000, 0b0010_0000, 0b0100_0000, 0b1000_0000];
+    assert_eq!(check(bitarray[0],2,0,0,0,0,0,0,1), true, "Hard comparison does not work for {:b}", bitarray[0]);
+    assert_eq!(check(bitarray[1],0,2,0,0,0,0,1,0), true, "Hard comparison does not work for {:b}", bitarray[1]);
+    assert_eq!(check(bitarray[2],0,0,2,0,0,1,0,0), true, "Hard comparison does not work for {:b}", bitarray[2]);
+    assert_eq!(check(bitarray[3],0,0,0,2,1,0,0,0), true, "Hard comparison does not work for {:b}", bitarray[3]);
+    assert_eq!(check(bitarray[4],0,0,0,1,2,0,0,0), true, "Hard comparison does not work for {:b}", bitarray[4]);
+    assert_eq!(check(bitarray[5],0,0,1,0,0,2,0,0), true, "Hard comparison does not work for {:b}", bitarray[5]);
+    assert_eq!(check(bitarray[6],0,1,0,0,0,0,2,0), true, "Hard comparison does not work for {:b}", bitarray[6]);
+    assert_eq!(check(bitarray[7],1,0,0,0,0,0,0,2), true, "Hard comparison does not work for {:b}", bitarray[7]);
+    assert_eq!(check(bitarray[0],2,0,0,0,0,0,0,0), false, "Hard comparison does not work for {:b}", bitarray[0]);
+    assert_eq!(check(bitarray[1],0,2,0,0,0,0,0,0), false, "Hard comparison does not work for {:b}", bitarray[1]);
+    assert_eq!(check(bitarray[2],0,0,2,0,0,0,0,0), false, "Hard comparison does not work for {:b}", bitarray[2]);
+    assert_eq!(check(bitarray[3],0,0,0,2,0,0,0,0), false, "Hard comparison does not work for {:b}", bitarray[3]);
+    assert_eq!(check(bitarray[4],0,0,0,0,2,0,0,0), false, "Hard comparison does not work for {:b}", bitarray[4]);
+    assert_eq!(check(bitarray[5],0,0,0,0,0,2,0,0), false, "Hard comparison does not work for {:b}", bitarray[5]);
+    assert_eq!(check(bitarray[6],0,0,0,0,0,0,2,0), false, "Hard comparison does not work for {:b}", bitarray[6]);
+    assert_eq!(check(bitarray[7],0,0,0,0,0,0,0,2), false, "Hard comparison does not work for {:b}", bitarray[7]);
+  }
+
+  #[test]
+  fn nop() {
+    let inst = Instruction::translate(0b0000_0000);
+    assert_eq!(inst, Instruction::NOP, "Does not read NOP correctly");
+  }
+
+  #[test]
+  fn interrupts() {
+    let ei = Instruction::translate(0xfb);
+    let di = Instruction::translate(0xf3);
+    assert_eq!(ei, Instruction::EI, "Does not read EI correctly");
+    assert_eq!(di, Instruction::DI, "Does not read DI correctly");
+
+  }
+
+}

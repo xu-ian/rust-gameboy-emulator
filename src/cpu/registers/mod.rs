@@ -28,12 +28,12 @@
 
     pub fn new() -> Registers {
       Registers {
-        a:0,f:0,
-        b:0,c:0,
-        d:0,e:0,
-        h:0,l:0,
-        pc:0,
-        sp:0,
+        a:0x01,f:0xb0,
+        b:0,c:0x13,
+        d:0,e:0xd8,
+        h:0x01,l:0x4d,
+        pc:0x0100,
+        sp:0xfffe,
       }
     }
 
@@ -181,7 +181,18 @@
     }
     
     pub fn join_u8(int1: u8, int2: u8) -> u16 {
-      (u16::from(int1) << 4) + u16::from(int2)
+      (u16::from(int1) << 8) + u16::from(int2)
     }
   
   }
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+
+  #[test]
+  fn verify_join_u8() {
+    assert_eq!(Registers::join_u8(0x01, 0x10), 0x0110, "joining 0x01 and 0x10 equals {:#04x} instead of 0x0110", Registers::join_u8(0x01, 0x10));
+  }
+
+}

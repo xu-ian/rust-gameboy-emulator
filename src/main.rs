@@ -1,6 +1,7 @@
 use std::sync::Arc;
 use std::sync::Mutex;
-use gameboy::cpu;
+use std::fs::read;
+
 use egui::Vec2;
 use eframe::egui;
 use egui::Shape;
@@ -11,23 +12,35 @@ use egui::Sense;
 use egui::Rect;
 use egui::Rounding;
 
+use gameboy::cpu;
+
+
+
 fn main() {
-    println!("Hello, world!");
     let state = cpu::RunningState::new();
     let memclone = state.get_memory_copy();
-    
-    cpu::run();
+
+    //Loads the rom from file system to a vector
+    let bytes = read("./Tetris.gb").unwrap();
+    //Loads the contents of the rom into the memory
+    memclone.lock().unwrap()[..bytes.len()].clone_from_slice(bytes.as_slice());
+
+    //println!("Copied Memory: {:#04x}", memclone.lock().unwrap()[0x7eb0]);
+    //println!("Read Rom: {:#04x}", bytes[0x7eb0]);
+    //println!("From state: {:#04x}", state.get_memory_copy().lock().unwrap()[0x7eb0]);
+    cpu::run(state);
 
     
-    let native_options = eframe::NativeOptions::default();
-    eframe::run_native("My egui App", native_options, 
-        Box::new(|_cc| Box::new(MyEguiApp::new(memclone)))).expect("Something happened");
+    //let native_options = eframe::NativeOptions::default();
+    //eframe::run_native("My egui App", native_options, 
+    //    Box::new(|_cc| Box::new(MyEguiApp::new(memclone)))).expect("Something happened");
 }
 
 //#[derive(Default)]
 struct MyEguiApp {
     memory: Arc<Mutex<Box<[u8; 65536]>>>
 }
+
 
 impl MyEguiApp {
     fn new(memory: Arc<Mutex<Box<[u8; 65536]>>>) -> Self {
