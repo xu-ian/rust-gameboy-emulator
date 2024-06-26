@@ -25,6 +25,18 @@
   }
 
   impl Registers {
+
+    pub fn new() -> Registers {
+      Registers {
+        a:0,f:0,
+        b:0,c:0,
+        d:0,e:0,
+        h:0,l:0,
+        pc:0,
+        sp:0,
+      }
+    }
+
     pub fn write_register(&mut self, byte:u8, value: u8) {
       if byte == 0x0 {
         self.b = value;

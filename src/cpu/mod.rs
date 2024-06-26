@@ -11,6 +11,8 @@ use registers::FlagActions;
 use registers::Register;
 use registers::Registers;
 use std::num::Wrapping;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 fn check_half_carry_add(byte1: u8, byte2: u8, carry: u8) -> bool {
     ((byte1 & 0x0F) + (byte2 & 0x0F) + carry) & 0x10 == 0x10
@@ -61,6 +63,19 @@ pub struct RunningState {
 }
 
 impl RunningState {
+
+    pub fn new() -> RunningState {
+        RunningState {
+            registers: Registers::new(),
+            memory: Memory::new(),
+            interrupts: false    
+        }
+    }
+
+    pub fn get_memory_copy(&self) -> Arc<Mutex<Box<[u8; 0x10000]>>> {
+        Arc::clone(&self.memory.data)
+    }
+
     fn read_register(&mut self, byte: u8) -> u8 {
         self.registers.read_register(byte)
     }
@@ -1334,9 +1349,7 @@ pub fn run() {
         h: 0b0010_1111,
         l: 0b1000_1111,
     };
-    let mut memory = Memory {
-        data: Box::new([0; 0x10000]),
-    };
+    let mut memory = Memory::new();
 
     registers.dump_registers();
     memory.write_memory(usize::from(registers.pc), 0b0000_0100);
