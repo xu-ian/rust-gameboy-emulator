@@ -152,7 +152,7 @@ impl RunningState {
             //Saves register value to HL memory location
             Instruction::Load(6, Dest::Reg(register)) => self.save_register_to_hl(register),
             //Loads data from HL memory location to register
-            Instruction::Load(register, Dest::Reg(6)) => self.load_h1_to_register(register),
+            Instruction::Load(register, Dest::Reg(6)) => self.load_hl_to_register(register),
             //Copies data from one register to another
             Instruction::Load(reg1, Dest::Reg(reg2)) => self.register_to_register_copy(reg1, reg2),
             //Loads A with memory at location BC
@@ -383,7 +383,7 @@ impl RunningState {
         self.write_memory(usize::from(self.registers.get_hl_value()), data);
     }
 
-    fn load_h1_to_register(&mut self, register: Register) {
+    fn load_hl_to_register(&mut self, register: Register) {
         let data = self.read_memory(self.registers.get_hl_value());
         self.write_register(register, data);
     }
@@ -450,16 +450,16 @@ impl RunningState {
         let mut address = self.registers.get_hl_value();
         self.registers.a = self.read_memory(address);
         decrement(&mut address);
-        self.registers.l = (address % 16) as u8;
-        self.registers.h = (address >> 4) as u8;
+        self.registers.l = (address % 256) as u8;
+        self.registers.h = (address >> 8) as u8;
     }
 
     fn save_a_to_hl_address_dec(&mut self) {
         let mut address = self.registers.get_hl_value();
         self.write_memory(usize::from(address), self.registers.a);
         decrement(&mut address);
-        self.registers.l = (address % 16) as u8;
-        self.registers.h = (address >> 4) as u8;
+        self.registers.l = (address % 256) as u8;
+        self.registers.h = (address >> 8) as u8;
     }
 
     fn load_hl_address_to_a_inc(&mut self) {
@@ -467,16 +467,16 @@ impl RunningState {
         self.registers.a = self.read_memory(address);
 
         increment(&mut address);
-        self.registers.l = (address % 16) as u8;
-        self.registers.h = (address >> 4) as u8;
+        self.registers.l = (address % 256) as u8;
+        self.registers.h = (address >> 8) as u8;
     }
 
     fn save_a_to_hl_address_inc(&mut self) {
         let mut address = self.registers.get_hl_value();
         self.write_memory(usize::from(address), self.registers.a);
         increment(&mut address);
-        self.registers.l = (address % 16) as u8;
-        self.registers.h = (address >> 4) as u8;
+        self.registers.l = (address % 256) as u8;
+        self.registers.h = (address >> 8) as u8;
     }
 
     fn load_immediate_to_register_pair(&mut self, pair: RegisterPairs) {
@@ -505,8 +505,8 @@ impl RunningState {
         let lesser = self.read_memory_from_pc();
         let greater = self.read_memory_from_pc();
         let address = Registers::join_u8(greater, lesser);
-        let lsb = (self.registers.sp % 16) as u8;
-        let msb = (self.registers.sp >> 4) as u8;
+        let lsb = (self.registers.sp % 256) as u8;
+        let msb = (self.registers.sp >> 8) as u8;
         self.write_memory(usize::from(address), lsb);
         self.write_memory(usize::from(address + 1), msb);
     }
@@ -1441,6 +1441,400 @@ impl RunningState {
         //println!("Interrupts enabled");
         self.interrupts = true;
     }
+}
+
+#[cfg(test)]
+mod tests {
+
+    use super::*;
+
+    //Load and Save do not change the flags
+
+    #[test]
+    fn check_load_immediate_to_hl() {
+        let mut state = RunningState::new();
+        state.write_memory(usize::from(state.registers.get_hl_value()), 0xFF);
+        state.write_memory(usize::from(state.registers.pc), 0x00);
+        state.load_immediate_to_hl();
+        assert_eq!(0x00, state.read_memory(state.registers.get_hl_value()), 
+                    "Memory from immediate was not saved in space pointed by hl");
+    }
+
+    #[test]
+    fn check_load_immediate_register() {
+        let mut state = RunningState::new();
+        for i in 0..7 {
+            if i != 6 {
+                state.write_register(i, 0x00);
+                state.write_memory(usize::from(state.registers.pc), 0xFF);
+                state.load_immediate_to_register(i);
+                assert_eq!(0xFF, state.read_register(i), 
+                            "Memory from immediate was not saved in register {i}");
+            }
+        }
+    }
+
+    #[test]
+    fn check_save_register_to_hl() {
+        let mut state = RunningState::new();
+        for i in 0..7 {
+            if i != 6 {
+                state.write_register(i, 0xFF);
+                state.write_memory(usize::from(state.registers.get_hl_value()), 0);
+                state.save_register_to_hl(i);
+                assert_eq!(0xFF, state.read_memory(state.registers.get_hl_value()),
+                            "Memory from register {i} was not saved to hl memory location");
+            }
+        }
+    }
+
+    #[test]
+    fn check_load_hl_to_register() {
+        let mut state = RunningState::new();
+        for i in 0..7 {
+            if i != 6 {
+                state.write_register(i, 0x00);
+                state.write_memory(usize::from(state.registers.get_hl_value()), 0xFF); 
+                state.load_hl_to_register(i);
+                assert_eq!(0xFF, state.read_register(i), 
+                            "Memory loaded from register {i} does not match memory from hl memory location");
+            }
+        }
+    }
+
+    #[test]
+    fn check_register_to_register_copy() {
+        let mut state = RunningState::new();
+        for i in 0..7 {
+            for j in 0..7 {
+                if i != 6 && j != 6 {
+                    state.write_register(i, 32-i);
+                    state.write_register(j, 64-j);
+                    state.register_to_register_copy(i, j);
+                    assert_eq!(state.read_register(i), 64-j, "Register {i} did not copy data from register {j}");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn check_load_bc_address_to_a() {
+        let mut state = RunningState::new();
+        state.write_memory(usize::from(state.registers.get_bc_value()), 0xFF);
+        state.registers.a = 0x00;
+        state.load_bc_address_to_a();
+        assert_eq!(state.registers.a, 0xFF, "Memory from BC address did not get loaded to register A");
+    }
+
+    #[test]
+    fn check_save_a_to_bc_address() {
+        let mut state = RunningState::new();
+        state.write_memory(usize::from(state.registers.get_bc_value()), 0xFF);
+        state.registers.a = 0x00;
+        state.save_a_to_bc_address();
+        assert_eq!(state.read_memory(state.registers.get_bc_value()), 0x00, "Memory from Register A did not get loaded to BC address");
+    }
+
+    #[test]
+    fn check_load_de_address_to_a() {
+        let mut state = RunningState::new();
+        state.write_memory(usize::from(state.registers.get_de_value()), 0xFF);
+        state.registers.a = 0x00;
+        state.load_de_address_to_a();
+        assert_eq!(state.registers.a, 0xFF, "Memory from DE address did not get loaded to register A");
+    }
+
+    #[test]
+    fn check_save_a_to_de_address() {
+        let mut state = RunningState::new();
+        state.write_memory(usize::from(state.registers.get_de_value()), 0xFF);
+        state.registers.a = 0x00;
+        state.save_a_to_de_address();
+        assert_eq!(state.read_memory(state.registers.get_de_value()), 0x00, "Memory from Register A did not get loaded to DE address");
+    }
+
+    #[test]
+    fn check_load_immediate_address_to_a() {
+        let mut state = RunningState::new();
+        state.write_memory(usize::from(state.registers.pc), 0xAA);
+        state.write_memory(usize::from(state.registers.pc+1), 0xAA);
+        state.write_memory(0xAAAA, 0xFF);
+        state.registers.a = 0x00;
+        state.load_immediate_address_to_a();
+        assert_eq!(state.registers.a, 0xFF, "Memory from immediate address did not get loaded to Register A")
+    }
+
+    #[test]
+    fn check_save_a_to_immediate_address() {
+        let mut state = RunningState::new();
+        state.write_memory(usize::from(state.registers.pc), 0xAA);
+        state.write_memory(usize::from(state.registers.pc+1), 0xAA);
+        state.write_memory(0xAAAA, 0xFF);
+
+        state.registers.a = 0x00;
+        state.save_a_to_immediate_address();
+        assert_eq!(state.read_memory(0xAAAA), 0x00, "Memory from Register A did not get loaded to the immediate address");
+    }
+
+    #[test]
+    fn check_load_ff_c_to_a() {
+        let mut state = RunningState::new();
+        state.registers.c = 0xAA;
+        state.registers.a = 0x00;
+        state.write_memory(0xFFAA, 0xFF);
+        state.load_ff_c_to_a();
+        assert_eq!(state.registers.a, 0xFF, "Did not load data at position 0xFF00 + C to register A");
+    }
+    
+    #[test]
+    fn check_save_a_to_ff_c() {
+        let mut state = RunningState::new();
+        state.registers.c = 0xAA;
+        state.registers.a = 0x00;
+        state.write_memory(0xFFAA, 0xFF);
+        state.save_a_to_ff_c();
+        assert_eq!(0x00, state.read_memory(0xFFAA), "Did not save data from register A to at position 0xFF00 + C");
+    }
+
+    #[test]
+    fn check_load_ff_n_to_a() {
+        let mut state = RunningState::new();
+        state.write_memory(usize::from(state.registers.pc), 0xAA);
+        state.registers.a = 0x00;
+        state.write_memory(0xFFAA, 0xFF);
+        state.load_ff_n_to_a();
+        assert_eq!(state.registers.a, 0xFF, "Did not load data at position 0xFF00 + immediate to register A");
+    }
+
+    #[test]
+    fn check_save_a_to_ff_n() {
+        let mut state = RunningState::new();
+        state.write_memory(usize::from(state.registers.pc), 0xAA);
+        state.registers.a = 0x00;
+        state.write_memory(0xFFAA, 0xFF);
+        state.save_a_to_ff_n();
+        assert_eq!(0x00, state.read_memory(0xFFAA), "Did not save data from register A to at position 0xFF00 + immediate");
+    }
+
+    #[test]
+    fn check_load_hl_address_to_a_dec() {
+        //Normal case
+        let mut state = RunningState::new();
+        let current_hl_value = state.registers.get_hl_value();
+        println!("{}", current_hl_value);
+        state.write_memory(usize::from(current_hl_value), 0xFF);
+        state.registers.a = 0x00;
+        state.load_hl_address_to_a_dec();
+        assert_eq!(state.registers.a, 0xFF, "Memory from HL address did not get loaded to register A");
+        assert_eq!(state.registers.get_hl_value(), current_hl_value - 1, "HL address did not decrease");
+
+        //Underflow case(Should allow underflow)
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.load_hl_address_to_a_dec();
+    }
+    
+    #[test]
+    fn check_save_a_to_hl_address_dec() {
+        //Normal case
+        let mut state = RunningState::new();
+        let current_hl_value = state.registers.get_hl_value();
+        state.write_memory(usize::from(current_hl_value), 0xFF);
+        state.registers.a = 0x00;
+        state.save_a_to_hl_address_dec();
+        assert_eq!(0x00, state.read_memory(current_hl_value), "Memory from register A did not get loaded to HL address");
+        assert_eq!(state.registers.get_hl_value(), current_hl_value - 1, "HL address did not decrease");
+
+        //Underflow case(Should allow underflow)
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.save_a_to_hl_address_dec();
+    }
+
+    #[test]
+    fn check_load_hl_address_to_a_inc() {
+        //Normal case
+        let mut state = RunningState::new();
+        let current_hl_value = state.registers.get_hl_value();
+        state.write_memory(usize::from(current_hl_value), 0xFF);
+        state.registers.a = 0x00;
+        state.load_hl_address_to_a_inc();
+        assert_eq!(state.registers.a, 0xFF, "Memory from HL address did not get loaded to register A");
+        assert_eq!(state.registers.get_hl_value(), current_hl_value + 1, "HL address did not increase");
+
+        //Overflow case(Should allow overflow)
+        state.registers.h = 0xFF;
+        state.registers.l = 0xFF;
+        state.load_hl_address_to_a_inc();
+    }
+
+    #[test]
+    fn check_save_a_to_hl_address_inc() {
+        //Normal case
+        let mut state = RunningState::new();
+        let current_hl_value = state.registers.get_hl_value();
+        state.write_memory(usize::from(current_hl_value), 0xFF);
+        state.registers.a = 0x00;
+        state.save_a_to_hl_address_inc();
+        assert_eq!(0x00, state.read_memory(current_hl_value), "Memory from register A did not get loaded to HL address");
+        assert_eq!(state.registers.get_hl_value(), current_hl_value + 1, "HL address did not increase");
+
+        //Overflow case(Should allow overflow)
+        state.registers.h = 0xFF;
+        state.registers.l = 0xFF;
+        state.save_a_to_hl_address_inc();
+    }
+
+    #[test]
+    fn check_load_immediate_to_register_pair() {
+        let mut state = RunningState::new();
+        let program_counter = Clone::clone(&state.registers.pc);
+        state.write_memory(usize::from(state.registers.pc), 0xFF);
+        state.write_memory(usize::from(state.registers.pc + 1), 0xFE);
+        state.registers.b = 0;
+        state.registers.c = 0;
+        state.registers.d = 0;
+        state.registers.e = 0;
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.registers.sp = 0;
+        state.load_immediate_to_register_pair(RegisterPairs::BC);
+        assert_eq!(0xFEFF, state.registers.get_bc_value(), "Did not load immediate to register pair BC");
+        state.registers.pc = program_counter;
+        state.load_immediate_to_register_pair(RegisterPairs::DE);
+        assert_eq!(0xFEFF, state.registers.get_de_value(), "Did not load immediate to register pair DE");
+        state.registers.pc = program_counter;
+        state.load_immediate_to_register_pair(RegisterPairs::HL);
+        assert_eq!(0xFEFF, state.registers.get_hl_value(), "Did not load immediate to register pair HL");
+        state.registers.pc = program_counter;
+        state.load_immediate_to_register_pair(RegisterPairs::AF);
+        assert_eq!(0xFEFF, state.registers.sp, "Did not load immediate to stack pointer");        
+        
+    }
+
+    #[test]
+    fn check_save_sp_to_immediate_address() {
+        let mut state = RunningState::new();
+        state.registers.sp = 0xFFFE;
+        state.write_memory(0xAAAA, 0);
+        state.write_memory(0xAAAB, 0);
+        state.write_memory(usize::from(state.registers.pc), 0xAA);
+        state.write_memory(usize::from(state.registers.pc + 1), 0xAA);
+        state.save_sp_to_immediate_address();
+        assert_eq!(state.read_memory(0xAAAA), 0xFE, "Stack pointer lsb was not written to immediate address correctly");
+        assert_eq!(state.read_memory(0xAAAB), 0xFF, "Stack pointer msb was not written to immediate address correctly");
+    }
+
+    #[test]
+    fn check_load_hl_to_sp() {
+        let mut state = RunningState::new();
+        state.registers.h = 0xFF;
+        state.registers.l = 0xFE;
+        state.registers.sp = 0x0000;
+        state.load_hl_to_sp();
+        assert_eq!(state.registers.sp, 0xFFFE, "HL address was not loaded to stack pointer correctly");
+    }
+
+    #[test]
+    fn check_push_bc_to_stack() {
+        let mut state = RunningState::new();
+        state.registers.b = 0xFF;
+        state.registers.c = 0xFE;
+        state.write_memory(0xFFFD, 0x00);
+        state.write_memory(0xFFFC, 0x00);
+        state.push_bc_to_stack();
+        assert_eq!(state.read_memory(0xFFFD), 0xFF, "Did not write the B into the correct memory position");
+        assert_eq!(state.read_memory(0xFFFC), 0xFE, "Did not write the C into the correct memory position");
+    }
+
+    #[test]
+    fn check_push_de_to_stack() {
+        let mut state = RunningState::new();
+        state.registers.d = 0xFF;
+        state.registers.e = 0xFE;
+        state.write_memory(0xFFFD, 0x00);
+        state.write_memory(0xFFFC, 0x00);
+        state.push_de_to_stack();
+        assert_eq!(state.read_memory(0xFFFD), 0xFF, "Did not write the D into the correct memory position");
+        assert_eq!(state.read_memory(0xFFFC), 0xFE, "Did not write the E into the correct memory position");
+    }
+
+    #[test]
+    fn check_push_hl_to_stack() {
+        let mut state = RunningState::new();
+        state.registers.h = 0xFF;
+        state.registers.l = 0xFE;
+        state.write_memory(0xFFFD, 0x00);
+        state.write_memory(0xFFFC, 0x00);
+        state.push_hl_to_stack();
+        assert_eq!(state.read_memory(0xFFFD), 0xFF, "Did not write the H into the correct memory position");
+        assert_eq!(state.read_memory(0xFFFC), 0xFE, "Did not write the L into the correct memory position");
+    }
+
+    #[test]
+    fn check_push_af_to_stack() {
+        let mut state = RunningState::new();
+        state.registers.a = 0xFF;
+        state.registers.f = 0xFE;
+        state.write_memory(0xFFFD, 0x00);
+        state.write_memory(0xFFFC, 0x00);
+        state.push_af_to_stack();
+        assert_eq!(state.read_memory(0xFFFD), 0xFF, "Did not write the A into the correct memory position");
+        assert_eq!(state.read_memory(0xFFFC), 0xFE, "Did not write the F into the correct memory position");
+    }
+
+    #[test]
+    fn check_pop_stack_to_bc() {
+        let mut state = RunningState::new();
+        state.registers.b = 0x00;
+        state.registers.c = 0x00;
+        state.registers.sp = 0xFFFC;
+        state.write_memory(0xFFFD, 0xFF);
+        state.write_memory(0xFFFC, 0xFE);
+        state.pop_stack_to_bc();
+        assert_eq!(state.registers.b, 0xFF, "Did not read the B from the correct memory position");
+        assert_eq!(state.registers.c, 0xFE, "Did not read the C from the correct memory position");
+    }
+    
+    #[test]
+    fn check_pop_stack_to_de() {
+        let mut state = RunningState::new();
+        state.registers.d = 0x00;
+        state.registers.e = 0x00;
+        state.registers.sp = 0xFFFC;
+        state.write_memory(0xFFFD, 0xFF);
+        state.write_memory(0xFFFC, 0xFE);
+        state.pop_stack_to_de();
+        assert_eq!(state.registers.d, 0xFF, "Did not read the D from the correct memory position");
+        assert_eq!(state.registers.e, 0xFE, "Did not read the E from the correct memory position");
+    }
+
+    #[test]
+    fn check_pop_stack_to_hl() {
+        let mut state = RunningState::new();
+        state.registers.h = 0x00;
+        state.registers.l = 0x00;
+        state.registers.sp = 0xFFFC;
+        state.write_memory(0xFFFD, 0xFF);
+        state.write_memory(0xFFFC, 0xFE);
+        state.pop_stack_to_hl();
+        assert_eq!(state.registers.h, 0xFF, "Did not read the H from the correct memory position");
+        assert_eq!(state.registers.l, 0xFE, "Did not read the L from the correct memory position");
+    }
+
+    #[test]
+    fn check_pop_stack_to_af() {
+        let mut state = RunningState::new();
+        state.registers.a = 0x00;
+        state.registers.f = 0x00;
+        state.registers.sp = 0xFFFC;
+        state.write_memory(0xFFFD, 0xFF);
+        state.write_memory(0xFFFC, 0xFE);
+        state.pop_stack_to_af();
+        assert_eq!(state.registers.a, 0xFF, "Did not read the A from the correct memory position");
+        assert_eq!(state.registers.f, 0xFE, "Did not read the F from the correct memory position");
+    }
+
 }
 
 pub fn run(mut state: RunningState) {
