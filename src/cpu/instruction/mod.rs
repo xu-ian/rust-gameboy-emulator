@@ -1,5 +1,7 @@
 
 use super::registers::Register;
+use std::fmt;
+use std::fmt::*;
 
 #[derive(Debug, PartialEq)]
 pub enum RegisterPairs {
@@ -9,7 +11,18 @@ pub enum RegisterPairs {
   AF,
 }
 
-#[derive(Debug, PartialEq)]
+impl fmt::Display for RegisterPairs {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    match self {
+      RegisterPairs::BC => write!(f, "BC"),
+      RegisterPairs::DE => write!(f, "DE"),
+      RegisterPairs::HL => write!(f, "HL"),
+      RegisterPairs::AF => write!(f, "AF"),
+    }
+  }
+}
+
+#[derive(Debug, PartialEq, Copy, Clone)]
 pub enum Cond {
   NZ, //00
   Z,  //01
@@ -17,10 +30,30 @@ pub enum Cond {
   C   //11
 }
 
+impl fmt::Display for Cond {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    match self {
+      Cond::C => write!(f, "C"),
+      Cond::NC => write!(f, "NC"),
+      Cond::Z => write!(f, "Z"),
+      Cond::NZ => write!(f, "NZ"),
+    }
+  }
+}
+
 #[derive(Debug, PartialEq)]
 pub enum MemAction {
   Save,
   Load
+}
+
+impl fmt::Display for MemAction {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    match self {
+      MemAction::Save => write!(f, "Save"),
+      MemAction::Load => write!(f, "Load"),
+    }
+  }
 }
 
 #[derive(Debug, PartialEq)]
@@ -30,6 +63,20 @@ pub enum Dest {
   HL,
   Immediate,
 }
+
+impl fmt::Display for Dest {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    match self {
+      Dest::Reg(x) => write!(f, "Reg({})", x),
+      Dest::RegPair(x) => write!(f, "RegPair({})", x),
+      Dest::HL => write!(f, "HL"),
+      Dest::Immediate => write!(f, "Immediate"),
+    }
+  }
+}
+
+
+
 #[derive(Debug, PartialEq)]
 pub enum Instruction {
   //Loads the specified register with the data from the destination
@@ -150,6 +197,72 @@ pub enum Instruction {
   EI,
   //Does nothing
   NOP,
+}
+
+impl fmt::Display for Instruction {
+  fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+    match self {
+      Instruction::Load(reg, dst) => write!(f, "Load({}, {})", reg, dst),
+      Instruction::AfBC(m_act) => write!(f, "AfBC({})", m_act),
+      Instruction::AfDE(m_act) => write!(f, "AfDE({})", m_act),
+      Instruction::Ann(m_act) => write!(f, "Ann({})", m_act),
+      Instruction::AXC(m_act) => write!(f, "AXC({})", m_act),
+      Instruction::AXn(m_act) => write!(f, "AXn({})", m_act),
+      Instruction::AfHLdec(m_act) => write!(f, "AfHLdec({})", m_act),
+      Instruction::AfHLinc(m_act) => write!(f, "AfHLinc({})", m_act),
+      Instruction::Loadnn(dst) => write!(f, "Loadnn({})", dst),
+      Instruction::SaveSPnn => write!(f, "SaveSPnn"),
+      Instruction::LoadSPHL => write!(f, "LoadSPHL"),
+      Instruction::PushStack(dst) => write!(f, "PushStack({})", dst),
+      Instruction::PopStack(dst) => write!(f, "PopStack({})", dst),
+      Instruction::LoadStackAdj => write!(f, "LoadStackAdj"),
+      Instruction::Add(dst) => write!(f, "Add({})", dst),
+      Instruction::AddCarry(dst) => write!(f, "AddCarry({})", dst),
+      Instruction::Sub(dst) => write!(f, "Sub({})", dst),
+      Instruction::SubCarry(dst) => write!(f, "SubCarry({})", dst),
+      Instruction::Compare(dst) => write!(f, "Compare({})", dst),
+      Instruction::Inc(dst) => write!(f, "Inc({})", dst),
+      Instruction::Dec(dst) => write!(f, "Dec({})", dst),
+      Instruction::AND(dst) => write!(f, "AND({})", dst),
+      Instruction::OR(dst) => write!(f, "OR({})", dst),
+      Instruction::XOR(dst) => write!(f, "XOR({})", dst),
+      Instruction::CCFlag => write!(f, "CCFlag"),
+      Instruction::SCFlag => write!(f, "SCFlag"),
+      Instruction::DAA => write!(f, "DAA"),
+      Instruction::CmpA => write!(f, "CmpA"),
+      Instruction::Inc16(dst) => write!(f, "Inc16({})", dst),
+      Instruction::Dec16(dst) => write!(f, "Dec16({})", dst),
+      Instruction::Add16(dst) => write!(f, "Add16({})", dst),
+      Instruction::SPAddn => write!(f, "SPAddn"),
+      Instruction::RotateLC(dst) => write!(f, "RotateLC({})", dst),
+      Instruction::RotateRC(dst) => write!(f, "RotateRC({})", dst),
+      Instruction::RotateL(dst) => write!(f, "RotateL({})", dst),
+      Instruction::RotateR(dst) => write!(f, "RotateR({})", dst),
+      Instruction::ShiftL(dst) => write!(f, "ShiftL({})", dst),
+      Instruction::ShiftRArith(dst) => write!(f, "ShiftRArith({})", dst),
+      Instruction::ShiftRLog(dst) => write!(f, "ShiftRLog({})", dst),
+      Instruction::SwapNibble(dst) => write!(f, "SwapNibble({})", dst),
+      Instruction::TestBit(u8, dst) => write!(f, "TestBIt({}, {})", u8, dst),
+      Instruction::ResetBit(u8, dst) => write!(f, "ResetBit({}, {})", u8, dst),
+      Instruction::SetBit(u8, dst) => write!(f, "SetBit({}, {})", u8, dst),
+      Instruction::Prefix => write!(f, "Prefix"),
+      Instruction::Jump(dst) => write!(f, "Jump({})", dst),
+      Instruction::JumpCond(cond) => write!(f, "JumpCond({})", cond),
+      Instruction::JumpRel => write!(f, "JumpRel"),
+      Instruction::JumpRelCond(cond) => write!(f, "JumpRelCond({})", cond),
+      Instruction::Call => write!(f, "Call"),
+      Instruction::CondCall(cond) => write!(f, "CondCall({})", cond),
+      Instruction::Ret => write!(f, "Ret"),
+      Instruction::CondRet(cond) => write!(f, "CondRet({})", cond),
+      Instruction::RetI => write!(f, "RetI"),
+      Instruction::Restart(u8) => write!(f, "Restart({})", u8),
+      Instruction::HALT => write!(f, "HALT"),
+      Instruction::STOP => write!(f, "STOP"),
+      Instruction::DI => write!(f, "DI"),
+      Instruction::EI => write!(f, "EI"),
+      Instruction::NOP => write!(f, "NOP"),
+    }
+  }
 }
 
 fn check(instruction:u8, b7:u8, b6:u8, b5:u8, b4:u8, b3:u8, b2:u8, b1:u8, b0:u8) -> bool {

@@ -28,17 +28,17 @@ fn main() {
     //println!("Copied Memory: {:#04x}", memclone.lock().unwrap()[0x7eb0]);
     //println!("Read Rom: {:#04x}", bytes[0x7eb0]);
     //println!("From state: {:#04x}", state.get_memory_copy().lock().unwrap()[0x7eb0]);
-    cpu::run(state);
+    gameboy::run(state);
 
     
-    //let native_options = eframe::NativeOptions::default();
-    //eframe::run_native("My egui App", native_options, 
-    //    Box::new(|_cc| Box::new(MyEguiApp::new(memclone)))).expect("Something happened");
+    let native_options = eframe::NativeOptions::default();
+    eframe::run_native("My egui App", native_options, 
+        Box::new(|_cc| Box::new(MyEguiApp::new(memclone)))).expect("Something happened");
 }
 
 //#[derive(Default)]
 struct MyEguiApp {
-    memory: Arc<Mutex<Box<[u8; 65536]>>>
+    _memory: Arc<Mutex<Box<[u8; 65536]>>>
 }
 
 
@@ -49,7 +49,7 @@ impl MyEguiApp {
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
         // for e.g. egui::PaintCallback.
         Self {
-            memory
+            _memory: memory
         }
     }
 }

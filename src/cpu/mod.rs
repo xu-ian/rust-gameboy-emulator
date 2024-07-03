@@ -14,9 +14,9 @@ use registers::Registers;
 use std::num::Wrapping;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::thread;
-
-use crossterm::event::{read, Event, KeyCode, KeyEvent};
+use std::fs;
+use std::fs::OpenOptions;
+use std::io::prelude::*;
 
 fn check_half_carry_add(byte1: u8, byte2: u8, carry: u8) -> bool {
     ((byte1 & 0x0F) + (byte2 & 0x0F) + carry) & 0x10 == 0x10
@@ -64,6 +64,7 @@ pub struct RunningState {
     registers: Registers,
     memory: Memory,
     interrupts: bool,
+    pub logging: [bool; 4]
 }
 
 impl RunningState {
@@ -72,7 +73,8 @@ impl RunningState {
         RunningState {
             registers: Registers::new(),
             memory: Memory::new(),
-            interrupts: false    
+            interrupts: false,
+            logging: [false, false, false, false],    
         }
     }
 
@@ -93,22 +95,30 @@ impl RunningState {
     }
 
     fn read_memory(&mut self, position: u16) -> u8 {
-        if position == 0xff00 {
-            println!("Reading from joypad!");
+        if position == 0xff00 && self.logging[3] {
+            fs::write("./src/log.txt", "Reading from joypad!\n").expect("File could not be written to");
         }
         self.memory.read_memory(position)
     }
 
-    fn read_interrupt_enable(&mut self) -> u8 {
+    pub fn read_interrupt_enable(&mut self) -> u8 {
         self.read_memory(0xFFFF)
     }
 
-    fn read_interrupt_flags(&mut self) -> u8 {
+    pub fn read_interrupt_flags(&mut self) -> u8 {
         self.read_memory(0xFF0F)
     }
 
     fn read_memory_from_pc(&mut self) -> u8 {
-        print!("PC: {:04x}, ", self.registers.pc);
+        if self.logging[1] {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .append(true)
+                .open("./src/log.txt")
+                .unwrap();
+
+            write!(file, "PC: {:04x}, ", self.registers.pc).expect("Could not open file");
+        }
         let data = self.memory.read_memory_from_pc(&mut self.registers);
         //println!("{:#04x}", data);
         data
@@ -118,7 +128,11 @@ impl RunningState {
         self.memory.write_memory(position, data)
     }
 
-    fn dump_tilemap(&mut self) {
+    pub fn dump_registers(&mut self) {
+        self.registers.dump_registers();
+    }
+
+    pub fn dump_tilemap(&mut self) {
         println!("Area 0");
         for i in 0x9800u16..0x9c00u16 {
             let x = self.read_memory(i);
@@ -140,8 +154,21 @@ impl RunningState {
         }
     }
 
-    pub fn perform_action(&mut self, instruction: Instruction) {
-        println!("Action: {:?}", instruction);
+    pub fn next(&mut self) {
+        let data = self.read_memory_from_pc();
+        self.perform_action(Instruction::translate(data));
+    }
+
+    fn perform_action(&mut self, instruction: Instruction) {
+        if self.logging[0] {
+            let mut file = OpenOptions::new()
+                .write(true)
+                .append(true)
+                .open("./src/log.txt")
+                .unwrap();
+
+            writeln!(file, "{}", instruction.to_string()).expect("Could not open file");
+        }
         match instruction {
             //Saves Immediate into location specified by HL
             Instruction::Load(6, Dest::Immediate) => self.load_immediate_to_hl(),
@@ -692,13 +719,13 @@ impl RunningState {
             None => match (self.registers.a + carry).checked_sub(sub_value) {
                 Some(_) => {
                     self.registers.a = u8::MIN;
+                    self.registers.set_carry_flag(false);
                 }
                 None => {
                     let a = Wrapping(self.registers.a);
                     let b = Wrapping(sub_value);
                     let c = Wrapping(carry);
                     self.registers.a = (a - b + c).0;
-
                     self.registers.set_carry_flag(true);
                 }
             },
@@ -754,7 +781,7 @@ impl RunningState {
 
         self.registers.set_sub_flag(false);
 
-        self.registers.set_zero_flag(mem == 0);
+        self.registers.set_zero_flag((value + one).0 == 0);
     }
 
     fn inc_register(&mut self, register: Register) {
@@ -769,7 +796,7 @@ impl RunningState {
 
         self.registers.set_sub_flag(false);
 
-        self.registers.set_zero_flag(regvalue == 0);
+        self.registers.set_zero_flag((value + one).0 == 0);
     }
 
     fn dec_hl_data(&mut self) {
@@ -782,9 +809,9 @@ impl RunningState {
 
         self.write_memory(usize::from(self.registers.get_hl_value()), (value - one).0);
 
-        self.registers.set_sub_flag(false);
+        self.registers.set_sub_flag(true);
 
-        self.registers.set_zero_flag(mem == 0);
+        self.registers.set_zero_flag((value - one).0 == 0);
     }
 
     fn dec_register(&mut self, register: Register) {
@@ -797,9 +824,9 @@ impl RunningState {
 
         self.write_register(register, (value - one).0);
 
-        self.registers.set_sub_flag(false);
+        self.registers.set_sub_flag(true);
 
-        self.registers.set_zero_flag(regvalue == 0);
+        self.registers.set_zero_flag((value - one).0 == 0);
     }
 
     fn and_hl_data_to_a(&mut self) {
@@ -907,36 +934,29 @@ impl RunningState {
             self.registers.set_carry_flag(true);
         }
 
-        // builds final H flag
-        if self.registers.get_sub_flag() == 1 && self.registers.get_half_carry_flag() == 0 {
-            self.registers.set_half_carry_flag(false);
-        } else {
-            if self.registers.get_sub_flag() == 1 && self.registers.get_half_carry_flag() == 1 {
-                self.registers
-                    .set_half_carry_flag((self.registers.a & 0x0F) < 6);
-            } else {
-                self.registers
-                    .set_half_carry_flag((self.registers.a & 0x0F) >= 0x0A);
-            }
-        }
+        // clears H flag
+        self.registers.set_half_carry_flag(false);
 
+        let alpha = Wrapping(self.registers.a);
+        let six = Wrapping(0x06);
+        let sixty = Wrapping(0x60);
         if t == 1 {
             if self.registers.get_sub_flag() == 1 {
-                self.registers.a -= 6;
+                self.registers.a = (alpha - six).0;
             } else {
-                self.registers.a += 6;
+                self.registers.a = (alpha + six).0;
             }
         } else if t == 2 {
             if self.registers.get_sub_flag() == 1 {
-                self.registers.a -= 0x60;
+                self.registers.a = (alpha - sixty).0;
             } else {
-                self.registers.a += 0x60;
+                self.registers.a = (alpha + sixty).0;
             }
         } else if t == 3 {
             if self.registers.get_sub_flag() == 1 {
-                self.registers.a -= 0x66;
+                self.registers.a = (alpha - sixty - six).0;
             } else {
-                self.registers.a += 0x66;
+                self.registers.a = (alpha + sixty + six).0;
             }
         }
         self.registers.set_zero_flag(self.registers.a == 0);
@@ -949,38 +969,47 @@ impl RunningState {
     }
 
     fn modify_bc(&mut self, value: i8) {
+        let bc = Wrapping(self.registers.get_bc_value());
+        let one = Wrapping(1);
         if value == 1 {
-            let value = self.registers.get_bc_value() + 1;
-            self.registers.c = (value % 16) as u8;
-            self.registers.b = (value >> 4) as u8;
+            let value = (bc + one).0;
+            self.registers.c = (value % 256) as u8;
+            self.registers.b = (value >> 8) as u8;
         } else {
-            let value = self.registers.get_bc_value() - 1;
-            self.registers.c = (value % 16) as u8;
-            self.registers.b = (value >> 4) as u8;
+            let value = (bc - one).0;
+            self.registers.c = (value % 256) as u8;
+            self.registers.b = (value >> 8) as u8;
         }
     }
 
     fn modify_de(&mut self, value: i8) {
+        let de = Wrapping(self.registers.get_de_value());
+        let one = Wrapping(1);
         if value == 1 {
-            let value = self.registers.get_de_value() + 1;
-            self.registers.e = (value % 16) as u8;
-            self.registers.d = (value >> 4) as u8;
+            let value = (de + one).0;
+            self.registers.e = (value % 256) as u8;
+            self.registers.d = (value >> 8) as u8;
         } else {
-            let value = self.registers.get_de_value() - 1;
-            self.registers.e = (value % 16) as u8;
-            self.registers.d = (value >> 4) as u8;
+            let value = (de - one).0;
+            self.registers.e = (value % 256) as u8;
+            self.registers.d = (value >> 8) as u8;
         }
     }
 
     fn modify_hl(&mut self, value: i8) {
+        let hl = Wrapping(self.registers.get_hl_value());
+        let one = Wrapping(1);
         if value == 1 {
-            let value = self.registers.get_hl_value() + 1;
-            self.registers.l = (value % 16) as u8;
-            self.registers.h = (value >> 4) as u8;
+            self.registers.dump_registers();
+            let value = (hl + one).0;
+            self.registers.l = (value % 256) as u8;
+            self.registers.h = (value >> 8) as u8;
+            self.registers.dump_registers();
+            
         } else {
-            let value = self.registers.get_hl_value() - 1;
-            self.registers.l = (value % 16) as u8;
-            self.registers.h = (value >> 4) as u8;
+            let value = (hl - one).0;
+            self.registers.l = (value % 256) as u8;
+            self.registers.h = (value >> 8) as u8;
         }
     }
 
@@ -989,7 +1018,11 @@ impl RunningState {
             RegisterPairs::BC => self.modify_bc(1),
             RegisterPairs::DE => self.modify_de(1),
             RegisterPairs::HL => self.modify_hl(1),
-            RegisterPairs::AF => self.registers.sp+=1,
+            RegisterPairs::AF => {
+                let sp = Wrapping(self.registers.sp);
+                let one = Wrapping(1);
+                self.registers.sp= (sp + one).0;
+            },
         }
     }
 
@@ -998,7 +1031,11 @@ impl RunningState {
             RegisterPairs::BC => self.modify_bc(-1),
             RegisterPairs::DE => self.modify_de(-1),
             RegisterPairs::HL => self.modify_hl(-1),
-            RegisterPairs::AF => self.registers.sp-=1,
+            RegisterPairs::AF => {
+                let sp = Wrapping(self.registers.sp);
+                let one = Wrapping(1);
+                self.registers.sp= (sp - one).0;
+            },
         }
     }
 
@@ -1025,8 +1062,8 @@ impl RunningState {
         }
 
         let value = (left + right).0;
-        self.registers.l = (value % 16) as u8;
-        self.registers.h = (value > 4) as u8;
+        self.registers.l = (value % 256) as u8;
+        self.registers.h = (value >> 8) as u8;
     }
 
     fn increase_stack_pointer(&mut self) {
@@ -1069,6 +1106,9 @@ impl RunningState {
         let leftmost = (regval & 0b1000_0000 > 7) as u8;
         self.write_register(register, (regval << 1) | leftmost);
         self.registers.set_carry_flag(leftmost == 1);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_zero_flag(((regval << 1) | leftmost) == 0 && register != 7);
+        self.registers.set_sub_flag(false);
     }
 
     fn rotate_register_right_circular(&mut self, register: Register) {
@@ -1076,6 +1116,9 @@ impl RunningState {
         let rightmost = (regval & 0b0000_0001) as u8;
         self.write_register(register, (regval >> 1) | (rightmost << 7));
         self.registers.set_carry_flag(rightmost == 1);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_zero_flag(((regval >> 1) | (rightmost << 7)) == 0 && register != 7);
+        self.registers.set_sub_flag(false);
     }
 
     fn rotate_register_left(&mut self, register: Register) {
@@ -1084,6 +1127,9 @@ impl RunningState {
         let carry = self.registers.get_carry_flag();
         self.write_register(register, (regval << 1) | carry);
         self.registers.set_carry_flag(leftmost == 1);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_zero_flag(((regval << 1) | carry) == 0 && register != 7);
+        self.registers.set_sub_flag(false);
     }
 
     fn rotate_register_right(&mut self, register: Register) {
@@ -1092,6 +1138,9 @@ impl RunningState {
         let carry = self.registers.get_carry_flag();
         self.write_register(register, (regval >> 1) | (carry << 7));
         self.registers.set_carry_flag(rightmost == 1);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_zero_flag(((regval >> 1) | (carry << 7)) == 0 && register != 7);
+        self.registers.set_sub_flag(false);
     }
 
     fn rotate_hl_data_left_circular(&mut self) {
@@ -1102,6 +1151,9 @@ impl RunningState {
             (regval << 1) | leftmost,
         );
         self.registers.set_carry_flag(leftmost == 1);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_zero_flag(((regval << 1) | leftmost) == 0);
+        self.registers.set_sub_flag(false);
     }
 
     fn rotate_hl_data_right_circular(&mut self) {
@@ -1112,6 +1164,9 @@ impl RunningState {
             (regval >> 1) | (rightmost << 7),
         );
         self.registers.set_carry_flag(rightmost == 1);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_zero_flag(((regval >> 1) | (rightmost << 7)) == 0);
+        self.registers.set_sub_flag(false);
     }
 
     fn rotate_hl_data_left(&mut self) {
@@ -1123,6 +1178,9 @@ impl RunningState {
             (regval << 1) | carry,
         );
         self.registers.set_carry_flag(leftmost == 1);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_zero_flag(((regval << 1) | carry) == 0);
+        self.registers.set_sub_flag(false);
     }
 
     fn rotate_hl_data_right(&mut self) {
@@ -1134,14 +1192,19 @@ impl RunningState {
             (regval >> 1) | (carry << 7),
         );
         self.registers.set_carry_flag(rightmost == 1);
+        self.registers.set_half_carry_flag(false);
+        self.registers.set_zero_flag(((regval >> 1) | (carry << 7)) == 0);
+        self.registers.set_sub_flag(false);
     }
 
     fn shift_register_left(&mut self, register: Register) {
         let regval = self.read_register(register);
-        let leftmost = regval & 0b1000_0000 >> 7;
+        let leftmost = (regval & 0b1000_0000) >> 7;
         self.write_register(register, regval << 1);
         self.registers.set_carry_flag(leftmost == 1);
         self.registers.set_zero_flag(regval << 1 == 0);
+        self.registers.set_sub_flag(false);
+        self.registers.set_half_carry_flag(false);
     }
 
     fn shift_register_right_ari(&mut self, register: Register) {
@@ -1150,7 +1213,9 @@ impl RunningState {
         let rightmost = regval & 0b0000_0001;
         self.write_register(register, (regval >> 1) | leftmost);
         self.registers.set_carry_flag(rightmost == 1);
-        self.registers.set_zero_flag(regval << 1 == 0);
+        self.registers.set_zero_flag((regval >> 1) | leftmost == 0);
+        self.registers.set_sub_flag(false);
+        self.registers.set_half_carry_flag(false);
     }
 
     fn shift_register_right_log(&mut self, register: Register) {
@@ -1158,15 +1223,19 @@ impl RunningState {
         let rightmost = regval & 0b0000_0001;
         self.write_register(register, regval >> 1);
         self.registers.set_carry_flag(rightmost == 1);
-        self.registers.set_zero_flag(regval << 1 == 0);
+        self.registers.set_zero_flag(regval >> 1 == 0);
+        self.registers.set_sub_flag(false);
+        self.registers.set_half_carry_flag(false);
     }
 
     fn shift_hl_data_left(&mut self) {
         let regval = self.read_memory(self.registers.get_hl_value());
-        let leftmost = regval & 0b1000_0000 >> 7;
+        let leftmost = (regval & 0b1000_0000) >> 7;
         self.write_memory(usize::from(self.registers.get_hl_value()), regval << 1);
         self.registers.set_carry_flag(leftmost == 1);
         self.registers.set_zero_flag(regval << 1 == 0);
+        self.registers.set_sub_flag(false);
+        self.registers.set_half_carry_flag(false);
     }
 
     fn shift_hl_data_right_ari(&mut self) {
@@ -1178,7 +1247,9 @@ impl RunningState {
             (regval >> 1) | leftmost,
         );
         self.registers.set_carry_flag(rightmost == 1);
-        self.registers.set_zero_flag(regval << 1 == 0);
+        self.registers.set_zero_flag((regval >> 1) | leftmost == 0);
+        self.registers.set_sub_flag(false);
+        self.registers.set_half_carry_flag(false);
     }
 
     fn shift_hl_data_right_log(&mut self) {
@@ -1186,7 +1257,9 @@ impl RunningState {
         let rightmost = regval & 0b0000_0001;
         self.write_memory(usize::from(self.registers.get_hl_value()), regval >> 1);
         self.registers.set_carry_flag(rightmost == 1);
-        self.registers.set_zero_flag(regval << 1 == 0);
+        self.registers.set_zero_flag(regval >> 1 == 0);
+        self.registers.set_sub_flag(false);
+        self.registers.set_half_carry_flag(false);
     }
 
     fn swap_register_nibble(&mut self, register: Register) {
@@ -1216,15 +1289,16 @@ impl RunningState {
         let regval = self.read_register(register);
         let bitval = (regval & (0b0000_0001 << bit)) >> bit;
         self.registers.set_half_carry_flag(true);
-        self.registers.set_sub_flag(true);
+        self.registers.set_sub_flag(false);
         self.registers.set_zero_flag(bitval == 0);
     }
 
     fn test_hl_data_bit(&mut self, bit: u8) {
         let regval = self.read_memory(self.registers.get_hl_value());
         let bitval = (regval & (0b0000_0001 << bit)) >> bit;
+        println!("BIT{bit}: {bitval}");
         self.registers.set_half_carry_flag(true);
-        self.registers.set_sub_flag(true);
+        self.registers.set_sub_flag(false);
         self.registers.set_zero_flag(bitval == 0);
     }
 
@@ -1253,7 +1327,8 @@ impl RunningState {
     }
 
     fn perform_cb_action(&mut self) {
-        //TODO: Set the next instruction read to read cb actions instead of normal actions
+        let data = self.read_memory_from_pc();
+        self.perform_action(Instruction::translatecb(data));
     }
 
     fn jump_to_hl_data(&mut self) {
@@ -1271,14 +1346,14 @@ impl RunningState {
         let carry_flag = self.registers.get_carry_flag();
         let perform_action;
         match cond {
-            Cond::NZ => perform_action = zero_flag != 0,
-            Cond::Z => perform_action = zero_flag == 0,
-            Cond::NC => perform_action = carry_flag != 0,
-            Cond::C => perform_action = carry_flag == 0            
+            Cond::NZ => perform_action = zero_flag == 0,
+            Cond::Z => perform_action = zero_flag != 0,
+            Cond::NC => perform_action = carry_flag == 0,
+            Cond::C => perform_action = carry_flag != 0            
         }
+        let lsb = self.read_memory_from_pc();
+        let msb = self.read_memory_from_pc();
         if perform_action {
-            let lsb = self.read_memory_from_pc();
-            let msb = self.read_memory_from_pc();
             self.registers.pc = Registers::join_u8(msb, lsb);
         }
     }
@@ -1297,13 +1372,13 @@ impl RunningState {
         let carry_flag = self.registers.get_carry_flag();
         let perform_action;
         match cond {
-            Cond::NZ => perform_action = zero_flag != 0,
-            Cond::Z => perform_action = zero_flag == 0,
-            Cond::NC => perform_action = carry_flag != 0,
-            Cond::C => perform_action = carry_flag == 0            
+            Cond::NZ => perform_action = zero_flag == 0,
+            Cond::Z => perform_action = zero_flag != 0,
+            Cond::NC => perform_action = carry_flag == 0,
+            Cond::C => perform_action = carry_flag != 0            
         }
+        let rel = self.read_memory_from_pc() as i8;
         if perform_action {
-            let rel = self.read_memory_from_pc() as i8;
             if rel > 0 {
                 self.registers.pc += rel as u16;
             } else {
@@ -1318,12 +1393,12 @@ impl RunningState {
         self.registers.sp -= 1;
         self.write_memory(
             usize::from(self.registers.sp),
-            (self.registers.pc >> 4) as u8,
+            (self.registers.pc >> 8) as u8,
         );
         self.registers.sp -= 1;
         self.write_memory(
             usize::from(self.registers.sp),
-            (self.registers.pc % 16) as u8,
+            (self.registers.pc % 256) as u8,
         );
         self.registers.pc = Registers::join_u8(msb, lsb);
     }
@@ -1333,23 +1408,23 @@ impl RunningState {
         let carry_flag = self.registers.get_carry_flag();
         let perform_action;
         match cond {
-            Cond::NZ => perform_action = zero_flag != 0,
-            Cond::Z => perform_action = zero_flag == 0,
-            Cond::NC => perform_action = carry_flag != 0,
-            Cond::C => perform_action = carry_flag == 0            
+            Cond::NZ => perform_action = zero_flag == 0,
+            Cond::Z => perform_action = zero_flag != 0,
+            Cond::NC => perform_action = carry_flag == 0,
+            Cond::C => perform_action = carry_flag != 0            
         }
+        let lsb = self.read_memory_from_pc();
+        let msb = self.read_memory_from_pc();
         if perform_action {
-            let lsb = self.read_memory_from_pc();
-            let msb = self.read_memory_from_pc();
             self.registers.sp -= 1;
             self.write_memory(
                 usize::from(self.registers.sp),
-                (self.registers.pc >> 4) as u8,
+                (self.registers.pc >> 8) as u8,
             );
             self.registers.sp -= 1;
             self.write_memory(
                 usize::from(self.registers.sp),
-                (self.registers.pc % 16) as u8,
+                (self.registers.pc % 256) as u8,
             );
             self.registers.pc = Registers::join_u8(msb, lsb);
         }
@@ -1368,10 +1443,10 @@ impl RunningState {
         let carry_flag = self.registers.get_carry_flag();
         let perform_action;
         match cond {
-            Cond::NZ => perform_action = zero_flag != 0,
-            Cond::Z => perform_action = zero_flag == 0,
-            Cond::NC => perform_action = carry_flag != 0,
-            Cond::C => perform_action = carry_flag == 0            
+            Cond::NZ => perform_action = zero_flag == 0,
+            Cond::Z => perform_action = zero_flag != 0,
+            Cond::NC => perform_action = carry_flag == 0,
+            Cond::C => perform_action = carry_flag != 0            
         }
         if perform_action {
             let lsb = self.read_memory(self.registers.sp);
@@ -1392,7 +1467,7 @@ impl RunningState {
     }
 
     fn restart(&mut self, location: u8) {
-        let first = location & 0b0000_0110 >> 1;
+        let first = (location & 0b0000_0110) >> 1;
         let second = location % 2;
         let mut position = 0x00 as u16;
         if first == 1 {
@@ -1401,9 +1476,7 @@ impl RunningState {
             position += 0x20;
         } else if first == 3 {
             position += 0x30;
-        } else {
-            panic!("This should not happen");
-        }
+        } else {}
 
         if second == 1 {
             position += 0x08;
@@ -1412,12 +1485,12 @@ impl RunningState {
         self.registers.sp -= 1;
         self.write_memory(
             usize::from(self.registers.sp),
-            (self.registers.pc >> 4) as u8,
+            (self.registers.pc >> 8) as u8,
         );
         self.registers.sp -= 1;
         self.write_memory(
             usize::from(self.registers.sp),
-            (self.registers.pc % 16) as u8,
+            (self.registers.pc % 256) as u8,
         );
         self.registers.pc = position;
     }
@@ -1433,12 +1506,10 @@ impl RunningState {
     }
 
     fn di(&mut self) {
-        //println!("Interrupts disabled");
         self.interrupts = false;
     }
 
     fn ei(&mut self) {
-        //println!("Interrupts enabled");
         self.interrupts = true;
     }
 }
@@ -1463,7 +1534,7 @@ mod tests {
     #[test]
     fn check_load_immediate_register() {
         let mut state = RunningState::new();
-        for i in 0..7 {
+        for i in 0..8 {
             if i != 6 {
                 state.write_register(i, 0x00);
                 state.write_memory(usize::from(state.registers.pc), 0xFF);
@@ -1477,7 +1548,7 @@ mod tests {
     #[test]
     fn check_save_register_to_hl() {
         let mut state = RunningState::new();
-        for i in 0..7 {
+        for i in 0..8 {
             if i != 6 {
                 state.write_register(i, 0xFF);
                 state.write_memory(usize::from(state.registers.get_hl_value()), 0);
@@ -1491,7 +1562,7 @@ mod tests {
     #[test]
     fn check_load_hl_to_register() {
         let mut state = RunningState::new();
-        for i in 0..7 {
+        for i in 0..8 {
             if i != 6 {
                 state.write_register(i, 0x00);
                 state.write_memory(usize::from(state.registers.get_hl_value()), 0xFF); 
@@ -1505,8 +1576,8 @@ mod tests {
     #[test]
     fn check_register_to_register_copy() {
         let mut state = RunningState::new();
-        for i in 0..7 {
-            for j in 0..7 {
+        for i in 0..8 {
+            for j in 0..8 {
                 if i != 6 && j != 6 {
                     state.write_register(i, 32-i);
                     state.write_register(j, 64-j);
@@ -1835,72 +1906,1807 @@ mod tests {
         assert_eq!(state.registers.f, 0xFE, "Did not read the F from the correct memory position");
     }
 
-}
+    #[test]
+    fn check_load_adjusted_stack_to_hl() {
+        let mut state = RunningState::new();
+        state.registers.sp = 0xAAAA;
+        state.registers.pc = 0x0100;
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0xAAAF, 0x3);
+        state.write_memory(0xAAB0, 0x4);
+        state.write_memory(0x100, 5);
+        state.load_adjusted_stack_to_hl();
+        assert_eq!(state.registers.get_hl_value(), 0x0403, 
+                    "Adjusted stack pointer did not load data from positive adjustment correctly");
 
-pub fn run(mut state: RunningState) {
+        state.registers.sp = 0xAAAA;
+        state.registers.pc = 0x0100;
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0xAAA5, 0x1);
+        state.write_memory(0xAAA6, 0x2);
+        state.write_memory(0x100, 0b1111_1011);
+        state.load_adjusted_stack_to_hl();
+        assert_eq!(state.registers.get_hl_value(), 0x0201, 
+                    "Adjusted stack pointer did not load data from negative adjustment correctly");
+        
+        //Overflowing stack pointer should fail, do not bother testing that
 
-    let arccopymem = state.get_memory_copy();
-
-    //Creates the key input thread
-    thread::spawn(move || {
-        let mut memcpy = Memory {
-            data: arccopymem
-        };
-
-        loop {
-            match read().unwrap() {
-                Event::Key(KeyEvent {
-                    code: KeyCode::Up,
-                    ..
-                }) => memcpy.write_memory(0xff00, 0b0001_0100),
-                Event::Key(KeyEvent {
-                    code: KeyCode::Down,
-                    ..
-                }) => memcpy.write_memory(0xff00, 0b0001_1000),
-                Event::Key(KeyEvent {
-                    code: KeyCode::Left,
-                    ..
-                }) => memcpy.write_memory(0xff00, 0b0001_0010),
-                Event::Key(KeyEvent {
-                    code: KeyCode::Right,
-                    ..
-                }) => memcpy.write_memory(0xff00, 0b0001_0001),
-                Event::Key(KeyEvent {
-                    code: KeyCode::Char('z'),
-                    ..
-                }) => memcpy.write_memory(0xff00, 0b0010_0010),
-                Event::Key(KeyEvent {
-                    code: KeyCode::Char('x'),
-                    ..
-                }) => memcpy.write_memory(0xff00, 0b0010_0001),
-                Event::Key(KeyEvent {
-                    code: KeyCode::Enter,
-                    ..
-                }) => memcpy.write_memory(0xff00, 0b0010_1000),
-                Event::Key(KeyEvent {
-                    code: KeyCode::Backspace,
-                    ..
-                }) => memcpy.write_memory(0xff00, 0b0010_0100),
-                Event::Key(KeyEvent {
-                    code: KeyCode::Esc,
-                    ..
-                }) => break,
-                _ => (),
-            }    
-        }
-    });
-
-    //loop {
-    //let mut arr = [0u16; 500];
-    for _ in 1..500 {
-        //arr[i] = state.registers.pc;
-        let data = state.read_memory_from_pc();
-        state.perform_action(Instruction::translate(data));
-        //let inter = state.interrupts;
-        //println!("IME Allow Interrupt status {inter}, Interrupts: {:04x}", state.read_interrupt_enable() & state.read_interrupt_flags());
     }
-    //state.registers.dump_registers();
-    //state.dump_tilemap();
-    //println!("{:?}", arr);
+
+    #[test]
+    fn check_add_to_accumulator() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.registers.b = 0b1111;
+        state.registers.c = 0b1111;
+        state.registers.d = 0b1111;
+        state.registers.e = 0b1111;
+        state.registers.pc = 0b0100;
+        state.registers.a = 0b1100;
+        state.write_memory(0, 0b1100);
+        state.write_memory(1, 0b1110_1000);
+        state.write_memory(usize::from(state.registers.pc), 0b1100);
+        state.write_memory(usize::from(state.registers.pc+1), 0b1110_1000);
+        state.write_memory(usize::from(state.registers.pc+2), 0b1000);
+        
+        state.add_hl_data_to_a();
+        assert_eq!(state.registers.a, 0b1_1000, "Does not add the right number");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set the half carry flag correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Sets the subtraction flag erroneously");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Sets the carry flag erroneously");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag erroneously");
+        
+        state.registers.l = 1;
+        
+        state.add_hl_data_to_a();
+        assert_eq!(state.registers.a, 0, "Does not add the right number");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Does not set the carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set the zero flag");
+
+        state.registers.l = 0;
+        state.add_hl_data_to_a();
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously sets the half-carry flag");
+
+        state.registers.a = 0b1100;
+
+        state.add_immediate_to_a();
+        assert_eq!(state.registers.a, 0b1_1000, "Does not add the right number");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set the half carry flag correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Sets the subtraction flag erroneously");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Sets the carry flag erroneously");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag erroneously");
+
+        state.add_immediate_to_a();
+        assert_eq!(state.registers.a, 0, "Does not add the right number");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Does not set the carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set the zero flag");
+
+        state.registers.l = 0;
+        state.add_hl_data_to_a();
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously sets the half-carry flag");
+
+        state.registers.h = 0b1111;
+        state.registers.l = 0b1111;
+        state.registers.a = 0b1111;
+        for i in 0..8 {
+            if i !=6 {
+                state.add_register_to_a(i);
+                if i != 7 {
+                    assert_eq!(state.registers.a, 30 + i*15, "Does not add the correct numbers");
+                } else {
+                    assert_eq!(state.registers.a, 210, "Does not add the correct numbers");
+                }
+                assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set the half carry flag correctly");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Sets the subtraction flag erroneously");
+                assert_eq!(state.registers.get_carry_flag(), 0, "Sets the carry flag erroneously");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag erroneously");
+            }
+        }
+        state.registers.a = 0b1111_1111;
+        state.registers.b = 1;
+        state.add_register_to_a(0);
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set the zero flag");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Does not set the carry flag");
+
+
+    }
+
+    #[test]
+    fn check_add_immediate_to_a() {
+        let mut state = RunningState::new();
+        state.registers.pc = 0b0100;
+        state.registers.a = 0b1100;
+        state.write_memory(usize::from(state.registers.pc), 0b1100);
+        state.write_memory(usize::from(state.registers.pc+1), 0b1110_1000);
+        
+        state.add_immediate_to_a();
+        assert_eq!(state.registers.a, 0b1_1000, "Does not add the right number");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set the half carry flag correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Sets the subtraction flag erroneously");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Sets the carry flag erroneously");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag erroneously");
+
+        state.add_immediate_to_a();
+        assert_eq!(state.registers.a, 0, "Does not add the right number");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Does not set the carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set the zero flag");
+    }
+
+    #[test]
+    fn check_add_hl_data_to_a() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.registers.a = 0b1100;
+        state.write_memory(0, 0b1100);
+        state.write_memory(1, 0b1110_1000);
+        
+        state.add_hl_data_to_a();
+        assert_eq!(state.registers.a, 0b1_1000, "Does not add the right number");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set the half carry flag correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Sets the subtraction flag erroneously");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Sets the carry flag erroneously");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag erroneously");
+        
+        state.registers.l = 1;
+        
+        state.add_hl_data_to_a();
+        assert_eq!(state.registers.a, 0, "Does not add the right number");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Does not set the carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set the zero flag");
+
+        state.registers.l = 0;
+        state.add_hl_data_to_a();
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously sets the half-carry flag");
+    }
+
+    #[test]
+    fn check_add_register_to_a() {
+        let mut state = RunningState::new();
+        state.registers.b = 0b1111;
+        state.registers.c = 0b1111;
+        state.registers.d = 0b1111;
+        state.registers.e = 0b1111;
+        state.registers.h = 0b1111;
+        state.registers.l = 0b1111;
+        state.registers.a = 0b1111;
+        for i in 0..8 {
+            if i !=6 {
+                state.add_register_to_a(i);
+                if i != 7 {
+                    assert_eq!(state.registers.a, 30 + i*15, "Does not add the correct numbers");
+                } else {
+                    assert_eq!(state.registers.a, 210, "Does not add the correct numbers");
+                }
+                assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set the half carry flag correctly");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Sets the subtraction flag erroneously");
+                assert_eq!(state.registers.get_carry_flag(), 0, "Sets the carry flag erroneously");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag erroneously");
+            }
+        }
+        state.registers.a = 0b1111_1111;
+        state.registers.b = 1;
+        state.add_register_to_a(0);
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set the zero flag");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Does not set the carry flag");
+
+        state.registers.a = 1;
+        state.add_register_to_a(0);
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously sets the half carry flag");
+
+    }
+
+    #[test]
+    fn check_add_immediate_to_a_carry() {
+        let mut state = RunningState::new();
+        state.registers.pc = 0b0100;
+        state.registers.a = 0b1011;
+        state.registers.set_carry_flag(true);
+        state.write_memory(usize::from(state.registers.pc), 0b1100);
+        state.write_memory(usize::from(state.registers.pc+1), 0b1110_0111);
+        state.write_memory(usize::from(state.registers.pc + 2), 1);
+
+        state.add_immediate_to_a_carry();
+        assert_eq!(state.registers.a, 0b1_1000, "Does not add the right number");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set the half carry flag correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Sets the subtraction flag erroneously");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Sets the carry flag erroneously");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag erroneously");
+
+        state.registers.set_carry_flag(true);
+        state.add_immediate_to_a_carry();
+        assert_eq!(state.registers.a, 0, "Does not add the right number");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Does not set the carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set the zero flag");
+
+        state.registers.set_carry_flag(true);
+        state.add_immediate_to_a_carry();
+        assert_eq!(state.registers.a, 2, "Does not add the right number");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously sets the half carry flag");
+
+    }
+
+    #[test]
+    fn check_add_hl_data_to_a_carry() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.registers.a = 0b1100;
+        state.write_memory(0, 0b1011);
+        state.write_memory(1, 0b1110_0111);
+        state.registers.set_carry_flag(true);
+        
+        state.add_hl_data_to_a_carry();
+        assert_eq!(state.registers.a, 0b1_1000, "Does not add the right number");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set the half carry flag correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Sets the subtraction flag erroneously");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Sets the carry flag erroneously");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag erroneously");
+        
+        state.registers.l = 1;        
+        state.registers.set_carry_flag(true);
+
+        state.add_hl_data_to_a_carry();
+        assert_eq!(state.registers.a, 0, "Does not add the right number");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Does not set the carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set the zero flag");
+
+        state.registers.l = 0;
+        state.add_hl_data_to_a_carry();
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously sets the half-carry flag");
+    }
+
+    #[test]
+    fn check_add_register_to_a_carry() {
+        let mut state = RunningState::new();
+        state.registers.b = 0b1110;
+        state.registers.c = 0b1110;
+        state.registers.d = 0b1110;
+        state.registers.e = 0b1110;
+        state.registers.h = 0b1110;
+        state.registers.l = 0b1110;
+        state.registers.a = 0b1111;
+        for i in 0..8 {
+            if i !=6 {
+                state.registers.set_carry_flag(true);
+                state.add_register_to_a_carry(i);
+                if i != 7 {
+                    assert_eq!(state.registers.a, 30 + i*15, "Does not add the correct numbers");
+                } else {
+                    assert_eq!(state.registers.a, 211, "Does not add the correct numbers");
+                }
+                assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set the half carry flag correctly");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Sets the subtraction flag erroneously");
+                assert_eq!(state.registers.get_carry_flag(), 0, "Sets the carry flag erroneously");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag erroneously");
+            }
+        }
+        state.registers.a = 0b1111_1110;
+        state.registers.b = 1;
+        state.registers.set_carry_flag(true);
+        state.add_register_to_a_carry(0);
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set the zero flag");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Does not set the carry flag");
+
+        state.registers.a = 1;
+        state.add_register_to_a(0);
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously sets the half carry flag");
+
+    }
+
+    #[test]
+    fn check_sub_immediate_from_a() {
+        let mut state = RunningState::new();
+        state.registers.a = 1;
+        state.write_memory(usize::from(state.registers.pc), 2);
+        state.sub_immediate_to_a();
+        assert_eq!(state.registers.a, 0b1111_1111, "Did not subtract properly");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Erroneously set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+        state.registers.a = 1;
+        state.write_memory(usize::from(state.registers.pc), 1);
+        state.sub_immediate_to_a();
+        assert_eq!(state.registers.a, 0, "Did not subtract properly");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+    }
+
+    #[test]
+    fn check_sub_hl_data_from_a() {
+        let mut state = RunningState::new();
+        state.registers.a = 1;
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 2);
+        state.sub_hl_data_to_a();
+        assert_eq!(state.registers.a, 0b1111_1111, "Did not subtract properly");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Erroneously set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+        state.registers.a = 1;
+        state.write_memory(0, 1);
+        state.sub_hl_data_to_a();
+        assert_eq!(state.registers.a, 0, "Did not subtract properly");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+    }
+
+    #[test]
+    fn check_sub_register_from_a() {
+        let mut state = RunningState::new();
+        for i in 0..6 {
+            state.registers.a = 1;
+            state.write_register(i, 2);
+            state.sub_register_to_a(i);
+            assert_eq!(state.registers.a, 0b1111_1111, "Did not subtract properly");
+            assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set half carry flag");
+            assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 0, "Erroneously set half zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+            state.registers.a = 1;
+            state.write_register(i, 1);
+            state.sub_register_to_a(i);
+            assert_eq!(state.registers.a, 0, "Did not subtract properly");
+            assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+            assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+        }
+        state.sub_register_to_a(7);
+        assert_eq!(state.registers.a, 0, "Did not subtract properly");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+    }
+
+    #[test]
+    fn check_sub_immediate_from_a_carry() {
+        let mut state = RunningState::new();
+        state.registers.a = 1;
+        state.write_memory(usize::from(state.registers.pc), 3);
+        state.registers.set_carry_flag(true);
+        state.sub_immediate_to_a_carry();
+        assert_eq!(state.registers.a, 0b1111_1111, "Did not subtract properly");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Erroneously set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+        state.registers.a = 1;
+        state.write_memory(usize::from(state.registers.pc), 2);
+        state.sub_immediate_to_a_carry();
+        assert_eq!(state.registers.a, 0, "Did not subtract properly");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+    }
+
+    #[test]
+    fn check_sub_hl_data_from_a_carry() {
+        let mut state = RunningState::new();
+        state.registers.a = 1;
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.registers.set_carry_flag(true);
+        state.write_memory(0, 3);
+        state.sub_hl_data_to_a_carry();
+        assert_eq!(state.registers.a, 0b1111_1111, "Did not subtract properly");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Erroneously set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+        state.registers.a = 1;
+        state.write_memory(0, 2);
+        state.sub_hl_data_to_a_carry();
+        assert_eq!(state.registers.a, 0, "Did not subtract properly");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+    }
+
+    #[test]
+    fn check_sub_register_from_a_carry() {
+        let mut state = RunningState::new();
+        for i in 0..6 {
+            state.registers.a = 1;
+            state.write_register(i, 3);
+            state.registers.set_carry_flag(true);
+            state.sub_register_to_a_carry(i);
+            assert_eq!(state.registers.a, 0b1111_1111, "Did not subtract properly");
+            assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set half carry flag");
+            assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 0, "Erroneously set half zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+            state.registers.a = 1;
+            state.write_register(i, 2);
+            state.sub_register_to_a_carry(i);
+            assert_eq!(state.registers.a, 0, "Did not subtract properly");
+            assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+            assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+        }
+        state.sub_register_to_a_carry(7);
+        assert_eq!(state.registers.a, 0, "Did not subtract properly");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+    }
+
+    #[test]
+    fn check_cmp_immediate_from_a() {
+        let mut state = RunningState::new();
+        state.registers.a = 1;
+        state.write_memory(usize::from(state.registers.pc), 2);
+        state.cmp_immediate_to_a();
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Erroneously set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+        state.registers.a = 1;
+        state.write_memory(usize::from(state.registers.pc), 1);
+        state.cmp_immediate_to_a();
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+    }
+
+    #[test]
+    fn check_cmp_hl_data_from_a() {
+        let mut state = RunningState::new();
+        state.registers.a = 1;
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 2);
+        state.cmp_hl_data_to_a();
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Erroneously set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+        state.registers.a = 1;
+        state.write_memory(0, 1);
+        state.cmp_hl_data_to_a();
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+    }
+
+    #[test]
+    fn check_cmp_register_from_a() {
+        let mut state = RunningState::new();
+        for i in 0..6 {
+            state.registers.a = 1;
+            state.write_register(i, 2);
+            state.cmp_register_to_a(i);
+            assert_eq!(state.registers.a, 1, "Changed the accumulator register");
+            assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set half carry flag");
+            assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 0, "Erroneously set half zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+            state.registers.a = 1;
+            state.write_register(i, 1);
+            state.cmp_register_to_a(i);
+            assert_eq!(state.registers.a, 1, "Changed the accumulator register");
+            assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+            assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+        }
+        state.cmp_register_to_a(7);
+        assert_eq!(state.registers.a, 1, "Changed the accumulator register");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Erroneously set half carry flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Erroneously set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set half zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+    }
+
+    #[test]
+    fn check_inc_hl_data() {
+        let mut state = RunningState::new();
+        [state.registers.h, state.registers.l] = [0, 0];
+        state.inc_hl_data();
+        assert_eq!(state.read_memory(0), 1, "Does not increment correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Does not set sub flag correctly");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Does not set zero flag correctly");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Does not set half carry flag correctly");
+        state.write_memory(0, 0xFF);
+        state.inc_hl_data();
+        assert_eq!(state.read_memory(0), 0, "Does not increment correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Does not set sub flag correctly");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set zero flag correctly");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set half carry flag correctly");        
+    }
+
+    #[test]
+    fn check_inc_register() {
+        let mut state = RunningState::new();
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 0);
+                state.inc_register(i);
+                assert_eq!(state.read_register(i), 1, "Does not increment correctly");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Does not set sub flag correctly");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Does not set zero flag correctly");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Does not set half carry flag correctly");
+                state.write_register(i, 0xFF);
+                state.inc_register(i);
+                assert_eq!(state.read_register(i), 0, "Does not increment correctly");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Does not set sub flag correctly");
+                assert_eq!(state.registers.get_zero_flag(), 1, "Does not set zero flag correctly");
+                assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set half carry flag correctly");                     
+            }
+        }
+    }
+    
+    #[test]
+    fn check_dec_hl_data() {
+        let mut state = RunningState::new();
+        [state.registers.h, state.registers.l] = [0, 0];
+        state.write_memory(0, 1);
+        state.dec_hl_data();
+        assert_eq!(state.read_memory(0), 0, "Does not increment correctly");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Does not set sub flag correctly");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set zero flag correctly");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Does not set half carry flag correctly");
+        state.dec_hl_data();
+        assert_eq!(state.read_memory(0), 0xFF, "Does not increment correctly");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Does not set sub flag correctly");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Does not set zero flag correctly");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set half carry flag correctly");        
+    }
+
+    #[test]
+    fn check_dec_register() {
+        let mut state = RunningState::new();
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 1);
+                state.dec_register(i);
+                assert_eq!(state.read_register(i), 0, "Does not decrement correctly");
+                assert_eq!(state.registers.get_sub_flag(), 1, "Does not set sub flag correctly");
+                assert_eq!(state.registers.get_zero_flag(), 1, "Does not set zero flag correctly");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Does not set half carry flag correctly");
+                state.dec_register(i);
+                assert_eq!(state.read_register(i), 0xFF, "Does not decrement correctly");
+                assert_eq!(state.registers.get_sub_flag(), 1, "Does not set sub flag correctly");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Does not set zero flag correctly");
+                assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set half carry flag correctly");                     
+            }
+        }
+    }
+    
+    #[test]
+    fn check_and_hl_data_to_a() {
+        let mut state = RunningState::new();
+        state.registers.a = 0b1001;
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0b1000);
+        state.and_hl_data_to_a();
+        assert_eq!(state.registers.a, 0b1000, 
+            "Did not perform and operation correctly {}, 0b1000", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        state.write_memory(0, 0b0110);
+        state.and_hl_data_to_a();
+        assert_eq!(state.registers.a, 0, 
+            "Did not perform and operation correctly {}, 0", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        
+    }
+
+    #[test]
+    fn check_and_immediate_to_a() {
+        let mut state = RunningState::new();
+        state.registers.a = 0b1001;
+        state.registers.pc = 0x100;
+        state.write_memory(0x100, 0b1000);
+        state.and_immediate_to_a();
+        assert_eq!(state.registers.a, 0b1000, 
+            "Did not perform and operation correctly {}, 0b1000", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        state.write_memory(0x101, 0b0110);
+        state.and_immediate_to_a();
+        assert_eq!(state.registers.a, 0, 
+            "Did not perform and operation correctly {}, 0", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+    }
+
+    #[test]
+    fn check_and_register_to_a() {
+        let mut state = RunningState::new();
+        for i in 0..6 {
+            state.registers.a = 0b1001;
+            state.write_register(i, 0b1000);
+            state.and_register_to_a(i);
+            assert_eq!(state.registers.a, 0b1000, 
+                "Did not perform and operation correctly {}, 0b1000", state.registers.a);
+            assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+            assert_eq!(state.registers.get_half_carry_flag(), 1, "Incorrect half carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 0, "Incorrect zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+            state.write_register(i, 0b0110);
+            state.and_register_to_a(i);
+            assert_eq!(state.registers.a, 0, 
+                "Did not perform and operation correctly {}, 0", state.registers.a);
+            assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+            assert_eq!(state.registers.get_half_carry_flag(), 1, "Incorrect half carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 1, "Incorrect zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        }
+        state.write_register(7, 0b1000);
+        state.and_register_to_a(7);
+        assert_eq!(state.registers.a, 8, 
+            "Did not perform and operation correctly {}, 8", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+    }
+
+    #[test]
+    fn check_or_hl_data_to_a() {
+        let mut state = RunningState::new();
+        state.registers.a = 0b0001;
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0b1000);
+        state.or_hl_data_to_a();
+        assert_eq!(state.registers.a, 0b1001, 
+            "Did not perform and operation correctly {}, 0b1001", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        state.write_memory(0, 0);
+        state.registers.a = 0;
+        state.or_hl_data_to_a();
+        assert_eq!(state.registers.a, 0, 
+            "Did not perform and operation correctly {}, 0", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        
+    }
+
+    #[test]
+    fn check_or_immediate_to_a() {
+        let mut state = RunningState::new();
+        state.registers.a = 0b1000;
+        state.registers.pc = 0x100;
+        state.write_memory(0x100, 0b0001);
+        state.or_immediate_to_a();
+        assert_eq!(state.registers.a, 0b1001, 
+            "Did not perform and operation correctly {}, 0b1001", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        state.write_memory(0x101, 0b0000);
+        state.registers.a = 0;
+        state.or_immediate_to_a();
+        assert_eq!(state.registers.a, 0, 
+            "Did not perform and operation correctly {}, 0", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+    }
+
+    #[test]
+    fn check_or_register_to_a() {
+        let mut state = RunningState::new();
+        for i in 0..6 {
+            state.registers.a = 0b1000;
+            state.write_register(i, 0b0001);
+            state.or_register_to_a(i);
+            assert_eq!(state.registers.a, 0b1001, 
+                "Did not perform and operation correctly {}, 0b1000", state.registers.a);
+            assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+            assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 0, "Incorrect zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+            state.write_register(i, 0b0000);
+            state.registers.a = 0;
+            state.or_register_to_a(i);
+            assert_eq!(state.registers.a, 0, 
+                "Did not perform and operation correctly {}, 0", state.registers.a);
+            assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+            assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 1, "Incorrect zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        }
+        state.write_register(7, 0b1000);
+        state.or_register_to_a(7);
+        assert_eq!(state.registers.a, 8, 
+            "Did not perform and operation correctly {}, 8", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+    }
+
+    #[test]
+    fn check_xor_hl_data_to_a() {
+        let mut state = RunningState::new();
+        state.registers.a = 0b0001;
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0b1000);
+        state.xor_hl_data_to_a();
+        assert_eq!(state.registers.a, 0b1001, 
+            "Did not perform and operation correctly {}, 0b1001", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        state.write_memory(0, 0b1001);
+        state.xor_hl_data_to_a();
+        assert_eq!(state.registers.a, 0, 
+            "Did not perform and operation correctly {}, 0", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        
+    }
+
+    #[test]
+    fn check_xor_immediate_to_a() {
+        let mut state = RunningState::new();
+        state.registers.a = 0b1000;
+        state.registers.pc = 0x100;
+        state.write_memory(0x100, 0b0001);
+        state.xor_immediate_to_a();
+        assert_eq!(state.registers.a, 0b1001, 
+            "Did not perform and operation correctly {}, 0b1001", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        state.write_memory(0x101, 0b1001);
+        state.xor_immediate_to_a();
+        assert_eq!(state.registers.a, 0, 
+            "Did not perform and operation correctly {}, 0", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+    }
+
+    #[test]
+    fn check_xor_register_to_a() {
+        let mut state = RunningState::new();
+        for i in 0..6 {
+            state.registers.a = 0b1000;
+            state.write_register(i, 0b0001);
+            state.xor_register_to_a(i);
+            assert_eq!(state.registers.a, 0b1001, 
+                "Did not perform and operation correctly {}, 0b1000", state.registers.a);
+            assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+            assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 0, "Incorrect zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+            state.write_register(i, 0b1001);
+            state.xor_register_to_a(i);
+            assert_eq!(state.registers.a, 0, 
+                "Did not perform and operation correctly {}, 0", state.registers.a);
+            assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+            assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+            assert_eq!(state.registers.get_zero_flag(), 1, "Incorrect zero flag");
+            assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+        }
+        state.write_register(7, 0b1000);
+        state.xor_register_to_a(7);
+        assert_eq!(state.registers.a, 0, 
+            "Did not perform and operation correctly {}, 0", state.registers.a);
+        assert_eq!(state.registers.get_carry_flag(), 0, "Incorrect carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Incorrect half carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Incorrect zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Incorrect sub flag");
+    }
+
+    #[test]
+    fn check_ccflag() {
+        let mut state = RunningState::new();
+        state.registers.set_carry_flag(true);
+        state.ccflag();
+        assert_eq!(state.registers.get_carry_flag(), 0, "Did not flip carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Did not set half carry to 0");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Did not set sub flag to 0");
+        state.ccflag();
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not flip carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Did not set half carry to 0");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Did not set sub flag to 0");
+    }
+
+    #[test]
+    fn check_scflag() {
+        let mut state = RunningState::new();
+        state.registers.set_carry_flag(false);
+        state.scflag();
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Did not set half carry to 0");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Did not set sub flag to 0");
+    }
+
+    #[test]
+    fn check_decimal_adjust_accumulator() {
+        let mut state = RunningState::new();
+        state.registers.a = 0b0001_1001; //DAA 19
+        state.registers.b = 0b0010_1000;//DAA 28
+        state.add_register_to_a(0);
+        state.decimal_adjust_accumulator();
+        assert_eq!(state.registers.a, 0b0100_0111, "Did not do DAA conversion properly");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Halfcarry flag should never be set");
+
+        state.registers.a = 0b100_0111; //DAA 47
+        state.registers.b = 0b10_1000;//DAA 28
+        state.sub_register_to_a(0);
+        state.decimal_adjust_accumulator();
+        assert_eq!(state.registers.a, 0b0001_1001, "Did not do DAA conversion properly");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Halfcarry flag should never be set");
+
+        state.registers.a = 0b1001_0001; //DAA 91
+        state.registers.b = 0b0001_0000;//DAA 10
+        state.add_register_to_a(0);
+        state.decimal_adjust_accumulator();
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Halfcarry flag should never be set");
+
+        state.registers.a = 0b000_0001; //DAA 1
+        state.registers.b = 0b00_0001;//DAA 1
+        state.sub_register_to_a(0);
+        state.decimal_adjust_accumulator();
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set zero flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Halfcarry flag should never be set");
+
+    }
+
+    #[test]
+    fn check_complement_accumulator() {
+        let mut state = RunningState::new();
+        state.registers.a = 0b0110_1001;
+        state.registers.set_sub_flag(false);
+        state.registers.set_half_carry_flag(false);
+        state.complement_accumulator();
+        assert_eq!(state.registers.a, 0b1001_0110, "Did not complement accumulator");
+        assert_eq!(state.registers.get_sub_flag(), 1, "Did not set sub flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set halfcarry flag");
+    }
+
+    #[test]
+    fn check_increment_register_pair() {
+        let mut state = RunningState::new();
+        for i in 0..6 {
+            if i % 2 == 1 {
+                state.write_register(i, 0xFF);
+            } else {
+                state.write_register(i, 0);
+            }
+        }
+        state.registers.sp = 0xF;
+        state.increment_register_pair(RegisterPairs::BC);
+        state.increment_register_pair(RegisterPairs::DE);
+        state.increment_register_pair(RegisterPairs::HL);
+        state.increment_register_pair(RegisterPairs::AF);
+        assert_eq!(state.registers.b, 1, "Did not increment BC properly");
+        assert_eq!(state.registers.c, 0, "Did not increment BC properly");
+        assert_eq!(state.registers.d, 1, "Did not increment DE properly");
+        assert_eq!(state.registers.e, 0, "Did not increment DE properly");
+        assert_eq!(state.registers.h, 1, "Did not increment HL properly");
+        assert_eq!(state.registers.l, 0, "Did not increment HL properly");
+        assert_eq!(state.registers.sp, 0x10, "Did not increment SP properly");
+        for i in 0..6 {
+            state.write_register(i, 0xFF);
+        }
+        state.registers.sp = 0xFFFF;
+        //Checks to see if overflow is allowed
+        state.increment_register_pair(RegisterPairs::BC);
+        state.increment_register_pair(RegisterPairs::DE);
+        state.increment_register_pair(RegisterPairs::HL);
+        state.increment_register_pair(RegisterPairs::AF);
+
+    }
+    
+    #[test]
+    fn check_decrement_register_pair() {
+        let mut state = RunningState::new();
+        for i in 0..6 {
+            if i % 2 == 1 {
+                state.write_register(i, 0x00);
+            } else {
+                state.write_register(i, 0xFF);
+            }
+        }
+        state.registers.sp = 0xFF00;
+        state.decrement_register_pair(RegisterPairs::BC);
+        state.decrement_register_pair(RegisterPairs::DE);
+        state.decrement_register_pair(RegisterPairs::HL);
+        state.decrement_register_pair(RegisterPairs::AF);
+        assert_eq!(state.registers.b, 0xFE, "Did not decrement BC properly");
+        assert_eq!(state.registers.c, 0xFF, "Did not decrement BC properly");
+        assert_eq!(state.registers.d, 0xFE, "Did not decrement DE properly");
+        assert_eq!(state.registers.e, 0xFF, "Did not decrement DE properly");
+        assert_eq!(state.registers.h, 0xFE, "Did not decrement HL properly");
+        assert_eq!(state.registers.l, 0xFF, "Did not decrement HL properly");
+        assert_eq!(state.registers.sp, 0xFEFF, "Did not decrement SP properly");
+        for i in 0..6 {
+            state.write_register(i, 0x0);
+        }
+        state.registers.sp = 0x0;
+        //Checks to see if overflow is allowed
+        state.decrement_register_pair(RegisterPairs::BC);
+        state.decrement_register_pair(RegisterPairs::DE);
+        state.decrement_register_pair(RegisterPairs::HL);
+        state.decrement_register_pair(RegisterPairs::AF);
+
+    }
+
+    #[test]
+    fn check_add_register_pair_to_hl() {
+        let mut state = RunningState::new();
+        state.registers.b = 0x1;
+        state.registers.c = 0x2;
+        state.registers.d = 0x3;
+        state.registers.e = 0x4;
+        state.registers.h = 0x5;
+        state.registers.l = 0x6;
+        state.registers.sp = 0x0708;
+        state.add_register_pair_to_hl(RegisterPairs::BC);
+        assert_eq!(state.registers.get_hl_value(), 0x0608, "Does not add BC correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Sets sub flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Sets carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Sets halfcarry flag");
+        state.add_register_pair_to_hl(RegisterPairs::DE);
+        assert_eq!(state.registers.get_hl_value(), 0x090C, "Does not add DE correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Sets sub flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Sets carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Sets halfcarry flag");
+        state.add_register_pair_to_hl(RegisterPairs::HL);
+        assert_eq!(state.registers.get_hl_value(), 0x1218, "Does not add HL correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Sets sub flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Sets carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set halfcarry flag");
+        state.add_register_pair_to_hl(RegisterPairs::AF);
+        assert_eq!(state.registers.get_hl_value(), 0x1920, "Does not add SP correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Sets sub flag");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Sets carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Sets halfcarry flag");
+        state.registers.sp = 0xFFFF;
+        state.add_register_pair_to_hl(RegisterPairs::AF);
+        assert_eq!(state.registers.get_hl_value(), 0x191F, "Does not add SP correctly");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Sets sub flag");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Does not set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Does not set halfcarry flag");
+    }
+
+    #[test]
+    fn check_increase_stack_pointer() {
+        let mut state = RunningState::new();
+        state.registers.sp = 0;
+        state.registers.pc = 0x100;
+        state.write_memory(0x100, 4);
+        state.write_memory(0x101, 0b1111_1100);
+        state.write_memory(0x102, 0b1111_1111);
+
+        state.increase_stack_pointer();
+        assert_eq!(state.registers.sp, 4, "Did not add correctly");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        state.increase_stack_pointer();
+        assert_eq!(state.registers.sp, 0, "Did not add correctly");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        state.increase_stack_pointer();
+        assert_eq!(state.registers.sp, 0xFFFF, "Did not add correctly");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Didn't set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 1, "Didn't set halfcarry flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+
+    }
+
+    #[test]
+    fn check_rotate_hl_data_left_circular() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0b10000000);
+        state.registers.set_carry_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_zero_flag(true);
+        state.registers.set_sub_flag(true);
+
+        state.rotate_hl_data_left_circular();
+        assert_eq!(state.read_memory(0), 0b1, "Did not rotate correctly");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        state.rotate_hl_data_left_circular();
+        assert_eq!(state.read_memory(0), 0b10, "Did not rotate correctly");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+    }
+
+    #[test]
+    fn check_rotate_hl_data_right_circular() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0b1);
+        state.registers.set_carry_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_zero_flag(true);
+        state.registers.set_sub_flag(true);
+
+        state.rotate_hl_data_right_circular();
+        assert_eq!(state.read_memory(0), 0b1000_0000, "Did not rotate correctly");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        state.rotate_hl_data_right_circular();
+        assert_eq!(state.read_memory(0), 0b0100_0000, "Did not rotate correctly");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+    }
+
+    #[test]
+    fn check_rotate_hl_data_left() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0b10000000);
+        state.registers.set_carry_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_zero_flag(true);
+        state.registers.set_sub_flag(true);
+
+        state.rotate_hl_data_left();
+        assert_eq!(state.read_memory(0), 0b0, "Did not rotate correctly");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        state.rotate_hl_data_left();
+        assert_eq!(state.read_memory(0), 0b1, "Did not rotate correctly");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+    }
+
+    #[test]
+    fn check_rotate_hl_data_right() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0b1);
+        state.registers.set_carry_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_zero_flag(true);
+        state.registers.set_sub_flag(true);
+
+        state.rotate_hl_data_right();
+        assert_eq!(state.read_memory(0), 0b0000_0000, "Did not rotate correctly");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Does not set zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        state.rotate_hl_data_right();
+        assert_eq!(state.read_memory(0), 0b1000_0000, "Did not rotate correctly");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+    }
+
+    #[test]
+    fn check_rotate_register_left_circular() {
+        let mut state = RunningState::new();
+        state.registers.set_carry_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_zero_flag(true);
+        state.registers.set_sub_flag(true);
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 0b10000000);
+                state.rotate_register_left_circular(i);
+                assert_eq!(state.read_register(i), 0b1, "Did not rotate correctly");
+                assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+                state.rotate_register_left_circular(i);
+                assert_eq!(state.read_register(i), 0b10, "Did not rotate correctly");
+                assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+            }
+        }
+    }
+
+    #[test]
+    fn check_rotate_register_right_circular() {
+        let mut state = RunningState::new();
+        state.registers.set_carry_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_zero_flag(true);
+        state.registers.set_sub_flag(true);
+
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 0b1);
+                state.rotate_register_right_circular(i);
+                assert_eq!(state.read_register(i), 0b1000_0000, "Did not rotate correctly");
+                assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+                state.rotate_register_right_circular(i);
+                assert_eq!(state.read_register(i), 0b0100_0000, "Did not rotate correctly");
+                assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+            }
+        }
+    }
+
+    #[test]
+    fn check_rotate_register_left() {
+        let mut state = RunningState::new();
+        state.registers.set_carry_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_zero_flag(true);
+        state.registers.set_sub_flag(true);
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 0b10000000);
+                state.rotate_register_left(i);
+                assert_eq!(state.read_register(i), 0b0, "Did not rotate correctly");
+                assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                if i != 7 {
+                    assert_eq!(state.registers.get_zero_flag(), 1, "Does not set zero flag");
+                } else {
+                    assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag");
+                }
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+                state.rotate_register_left(i);
+                assert_eq!(state.read_register(i), 0b1, "Did not rotate correctly");
+                assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+            }
+        }
+    }
+
+    #[test]
+    fn check_rotate_register_right() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.registers.set_carry_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_zero_flag(true);
+        state.registers.set_sub_flag(true);
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 0b1);
+                state.rotate_register_right(i);
+                assert_eq!(state.read_register(i), 0b0000_0000, "Did not rotate correctly");
+                assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                if i != 7 {
+                    assert_eq!(state.registers.get_zero_flag(), 1, "Does not set zero flag");
+                } else {
+                    assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag");
+                }
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+                state.rotate_register_right(i);
+                assert_eq!(state.read_register(i), 0b1000_0000, "Did not rotate correctly");
+                assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Sets the zero flag");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+            }
+        }
+    }
+
+    #[test]
+    fn check_shift_hl_data_left() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0b1000_0000);
+        state.registers.set_carry_flag(false);
+        state.registers.set_zero_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_sub_flag(true);
+        state.shift_hl_data_left();
+        assert_eq!(state.read_memory(0), 0, "Did not shift left properly");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set zero flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        state.write_memory(0, 0b0100_0000);
+        state.shift_hl_data_left();
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");        
+    }
+
+    #[test]
+    fn check_shift_hl_data_right_log() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 1);
+        state.registers.set_carry_flag(false);
+        state.registers.set_zero_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_sub_flag(true);
+        state.shift_hl_data_right_log();
+
+        assert_eq!(state.read_memory(0), 0, "Did not shift right logically");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set zero flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        state.write_memory(0, 0b1000_0000);
+        state.shift_hl_data_right_log();
+        assert_eq!(state.read_memory(0), 0b0100_0000, "Did not shift right logically");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");   
+    }
+
+    #[test]
+    fn check_shift_hl_data_right_ari() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 1);
+        state.registers.set_carry_flag(false);
+        state.registers.set_zero_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_sub_flag(true);
+        state.shift_hl_data_right_ari();
+
+        assert_eq!(state.read_memory(0), 0, "Did not shift right arithmetically");
+        assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set zero flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        state.write_memory(0, 0b1000_0000);
+        state.shift_hl_data_right_ari();
+        assert_eq!(state.read_memory(0), 0b1100_0000, "Did not shift right arithmetically");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");  
+    }
+
+    #[test]
+    fn check_shift_register_left() {
+        let mut state = RunningState::new();
+        state.registers.set_carry_flag(false);
+        state.registers.set_zero_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_sub_flag(true);
+
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 0b1000_0000);
+                state.shift_register_left(i);
+                assert_eq!(state.read_register(i), 0, "Did not shift left properly");
+                assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+                assert_eq!(state.registers.get_zero_flag(), 1, "Did not set zero flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+                state.write_register(i, 0b0100_0000);
+                state.shift_register_left(i);
+                assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+            }
+        }
+    }
+
+    #[test]
+    fn check_shift_register_right_log() {
+        let mut state = RunningState::new();
+        state.registers.set_carry_flag(false);
+        state.registers.set_zero_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_sub_flag(true);
+
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 1);
+                state.shift_register_right_log(i);
+                assert_eq!(state.read_register(i), 0, "Did not shift right logically");
+                assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+                assert_eq!(state.registers.get_zero_flag(), 1, "Did not set zero flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+                state.write_register(i, 0b1000_0000);
+                state.shift_register_right_log(i);
+                assert_eq!(state.read_register(i), 0b0100_0000, "Did not shift right logically");
+                assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+            }
+        }
+    }
+
+    #[test]
+    fn check_shift_register_right_ari() {
+        let mut state = RunningState::new();
+        state.registers.set_carry_flag(false);
+        state.registers.set_zero_flag(false);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_sub_flag(true);
+
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 1);
+                state.shift_register_right_ari(i);
+                assert_eq!(state.read_register(i), 0, "Did not shift right arithmetically");
+                assert_eq!(state.registers.get_carry_flag(), 1, "Did not set carry flag");
+                assert_eq!(state.registers.get_zero_flag(), 1, "Did not set zero flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+                state.write_register(i, 0b1000_0000);
+                state.shift_register_right_ari(i);
+                assert_eq!(state.read_register(i), 0b1100_0000, "Did not shift right arithmetically");
+                assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");  
+            }
+        }
+    }
+
+    #[test]
+    fn check_swap_hl_data_nibble() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0x4d);
+        state.registers.set_carry_flag(true);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_zero_flag(true);
+        state.registers.set_sub_flag(true);
+
+        state.swap_hl_data_nibble();
+        assert_eq!(state.read_memory(0), 0xd4, "Did not swap nibbles properly");
+        assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+        assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+        assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+        assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+
+        state.write_memory(0, 0);
+        state.swap_hl_data_nibble();
+        assert_eq!(state.registers.get_zero_flag(), 1, "Did not set zero flag");
+    }
+
+    #[test]
+    fn check_swap_register_nibble() {
+        let mut state = RunningState::new();
+        state.registers.set_carry_flag(true);
+        state.registers.set_half_carry_flag(true);
+        state.registers.set_zero_flag(true);
+        state.registers.set_sub_flag(true);
+
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 0x4d);
+                state.swap_register_nibble(i);
+                assert_eq!(state.read_register(i), 0xd4, "Did not swap nibbles properly");
+                assert_eq!(state.registers.get_carry_flag(), 0, "Set carry flag");
+                assert_eq!(state.registers.get_half_carry_flag(), 0, "Set halfcarry flag");
+                assert_eq!(state.registers.get_zero_flag(), 0, "Set zero flag");
+                assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        
+                state.write_register(i, 0);
+                state.swap_register_nibble(i);
+                assert_eq!(state.registers.get_zero_flag(), 1, "Did not set zero flag");
+            }
+        }
+    }
+
+    #[test]
+    fn check_test_hl_data_bit() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.registers.set_sub_flag(true);
+        state.registers.set_half_carry_flag(false);
+        state.write_memory(0, 0b01010101);
+        for i in 0..8 {
+            state.test_hl_data_bit(i);
+            assert_eq!(state.registers.get_zero_flag(), i % 2, "Did not test bit {i} correctly");
+            assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set halfcarry flag");
+            assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+        }
+    }
+
+    #[test]
+    fn check_set_hl_data_bit() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0);
+        for i in 0..8 {
+            state.set_hl_data_bit(i);
+            assert_eq!((state.read_memory(0) >> i) & 1, 1, "Did not set bit {i} correctly");
+        }
+    }
+
+    #[test]
+    fn check_reset_hl_data_bit() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0xFF);
+        for i in 0..8 {
+            state.reset_hl_data_bit(i);
+            assert_eq!((state.read_memory(0) >> i) & 1, 0, "Did not reset bit {i} correctly");
+        }
+    }
+
+    #[test]
+    fn check_test_register_bit() {
+        let mut state = RunningState::new();
+        state.registers.set_sub_flag(true);
+        state.registers.set_half_carry_flag(false);
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 0b01010101);
+                for j in 0..8 {
+                    state.test_register_bit(j, i);
+                    assert_eq!(state.registers.get_zero_flag(), j % 2, "Did not test bit {j} correctly");
+                    assert_eq!(state.registers.get_half_carry_flag(), 1, "Did not set halfcarry flag");
+                    assert_eq!(state.registers.get_sub_flag(), 0, "Set sub flag");
+                }    
+            }
+        }
+    }
+
+    #[test]
+    fn check_set_register_bit() {
+        let mut state = RunningState::new();
+        for i in 0..8 {
+            if i != 6 {
+                state.write_register(i, 0);
+                for j in 0..8 {
+                    state.set_register_bit(j, i);
+                    assert_eq!((state.read_register(i) >> j) & 1, 1, "Did not set bit {j} correctly");
+        
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn check_reset_register_bit() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        state.write_memory(0, 0xFF);
+        for i in 0..8 {
+            if i != 6 {
+                for j in 0..8 {
+                    state.reset_register_bit(j, i);
+                    assert_eq!((state.read_register(i) >> j) & 1, 0, "Did not reset bit {j} correctly");        
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn check_perform_cb_action() {
+        let mut state = RunningState::new();
+        state.write_memory(0x100, 0xc7);
+        state.registers.a = 0;
+        state.perform_cb_action();
+        assert_eq!(state.registers.a, 1, "Did not perform SET 0, A");
+    }
+
+    #[test]
+    fn check_jump_to_hl_data() {
+        let mut state = RunningState::new();
+        state.registers.h = 0;
+        state.registers.l = 0;
+        let sp = state.registers.sp;
+        state.jump_to_hl_data();
+        assert_eq!(state.registers.pc, 0, "Did not set PC to HL");
+        assert!(state.registers.sp == sp, "Changed stack pointer");
+    }
+
+    #[test]
+    fn check_jump_to_immediate() {
+        let mut state = RunningState::new();
+        state.write_memory(0x100, 0x45);
+        state.write_memory(0x101, 0xA2);
+        let sp = state.registers.sp;
+        state.jump_to_immediate();
+        assert_eq!(state.registers.pc, 0xA245, "Did not set PC to immediate");
+        assert!(state.registers.sp == sp, "Changed stack pointer");
+    }
+
+    #[test]
+    fn check_jump_cond_immediate() {
+        let mut state = RunningState::new();
+        state.registers.pc = 0x100;
+        state.write_memory(0xA245, 0x45);
+        state.write_memory(0xA246, 0xA2);        
+        state.write_memory(0x100, 0x45);
+        state.write_memory(0x101, 0xA2);
+        state.write_memory(0xA247, 0x45);
+        state.write_memory(0xA248, 0xA2);
+        let sp = state.registers.sp;
+        for condition in [Cond::C, Cond::NC, Cond::Z, Cond::NZ] {
+            for truism in [true, false] {
+                match condition {
+                    Cond::C => state.registers.set_carry_flag(truism),
+                    Cond::NC => state.registers.set_carry_flag(!truism),
+                    Cond::Z => state.registers.set_zero_flag(truism),
+                    Cond::NZ => state.registers.set_zero_flag(!truism)
+                }
+                state.jump_cond_immediate(condition);
+                if truism {
+                    match condition {
+                        Cond::C => assert_eq!(state.registers.pc, 0xA245, "Did not set PC to immediate"),
+                        Cond::NC => assert_eq!(state.registers.pc, 0xA245, "Did not set PC to immediate"),
+                        Cond::Z => assert_eq!(state.registers.pc, 0xA245, "Did not set PC to immediate"),
+                        Cond::NZ => assert_eq!(state.registers.pc, 0xA245, "Did not set PC to immediate"),
+                    }
+    
+                } else {
+                    match condition {
+                        Cond::C => assert_eq!(state.registers.pc, 0xA247, "Set PC to immediate"),
+                        Cond::NC => assert_eq!(state.registers.pc, 0xA247, "Set PC to immediate"),
+                        Cond::Z => assert_eq!(state.registers.pc, 0xA247, "Set PC to immediate"),
+                        Cond::NZ => assert_eq!(state.registers.pc, 0xA247, "Set PC to immediate"),
+                    }
+                }
+                assert!(state.registers.sp == sp, "Changed stack pointer");
+            }
+        }
+
+    }
+
+    #[test]
+    fn check_jump_rel_immediate() {
+        let mut state = RunningState::new();
+        state.write_memory(0x100, 4);
+        state.jump_rel_immediate();
+        assert_eq!(state.registers.pc, 0x105, "Did not jump forward properly");
+        state.write_memory(0x105, 0b1111_1000);
+        state.jump_rel_immediate();
+        assert_eq!(state.registers.pc, 0xFE, "Did not jump backward properly");
+    }
+
+    #[test]
+    fn check_jump_rel_cond_immediate() {
+        let mut state = RunningState::new();
+        state.write_memory(0x100, 5);
+        state.write_memory(0x106, 0b1111_0100);
+        state.write_memory(0x107, 0b1111_0011);
+        state.write_memory(0xFB, 10);
+        state.write_memory(0xFC, 9);
+        let sp = state.registers.sp;
+        for condition in [Cond::C, Cond::NC, Cond::Z, Cond::NZ] {
+            for truism in [true, false] {
+                match condition {
+                    Cond::C => state.registers.set_carry_flag(truism),
+                    Cond::NC => state.registers.set_carry_flag(!truism),
+                    Cond::Z => state.registers.set_zero_flag(truism),
+                    Cond::NZ => state.registers.set_zero_flag(!truism)
+                }
+                state.jump_rel_cond_immediate(condition);
+                if truism {
+                    match condition {
+                        Cond::C => assert_eq!(state.registers.pc, 0x106, "Did not set PC to immediate"),
+                        Cond::NC => assert_eq!(state.registers.pc, 0xFB, "Did not set PC to immediate"),
+                        Cond::Z => assert_eq!(state.registers.pc, 0x106, "Did not set PC to immediate"),
+                        Cond::NZ => assert_eq!(state.registers.pc, 0xFB, "Did not set PC to immediate"),
+                    }
+    
+                } else {
+                    match condition {
+                        Cond::C => assert_eq!(state.registers.pc, 0x107, "Set PC to immediate"),
+                        Cond::NC => assert_eq!(state.registers.pc, 0xFC, "Set PC to immediate"),
+                        Cond::Z => assert_eq!(state.registers.pc, 0x107, "Set PC to immediate"),
+                        Cond::NZ => assert_eq!(state.registers.pc, 0xFC, "Set PC to immediate"),
+                    }
+                }
+                assert!(state.registers.sp == sp, "Changed stack pointer");
+            }
+        }
+    }
+
+    #[test]
+    fn check_call_immediate() {
+        let mut state = RunningState::new();
+        state.write_memory(0x100, 0x26);
+        state.write_memory(0x101, 0xDF);
+        let sp = state.registers.sp;
+        state.call_immediate();
+        assert_eq!(state.registers.pc, 0xDF26, "Did not jump to function call");
+        assert_eq!(state.registers.sp, sp-2, "Stack did not increase by 2");
+        assert_eq!(state.read_memory(sp-1), 0x1, "Did not save PC correctly");
+        assert_eq!(state.read_memory(sp-2), 0x2, "Did not save PC correctly");
+    }
+
+    #[test]
+    fn check_ret() {
+        let mut state = RunningState::new();
+        state.write_memory(0x100, 0x15);
+        state.write_memory(0x100, 0xBA);
+        let sp = state.registers.sp;
+        state.call_immediate();
+        state.ret();
+        assert_eq!(state.registers.pc, 0x102, "Did not return to correct area");
+        assert_eq!(sp, state.registers.sp, "Did not pop stack pointer");
+    }
+
+    #[test]
+    fn check_call_cond_immediate() {
+        let mut state = RunningState::new();
+        state.write_memory(0x100, 0x00);
+        state.write_memory(0x101, 0x50);
+        state.write_memory(0x102, 0x00);
+        state.write_memory(0x103, 0x50);
+        state.write_memory(0x104, 0x00);
+        state.write_memory(0x105, 0x50);
+        state.write_memory(0x106, 0x00);
+        state.write_memory(0x107, 0x50);
+        state.write_memory(0x108, 0x00);
+        state.write_memory(0x109, 0x50);
+        state.write_memory(0x10A, 0x00);
+        state.write_memory(0x10B, 0x50);
+        state.write_memory(0x10C, 0x00);
+        state.write_memory(0x10D, 0x50);
+        state.write_memory(0x10E, 0x00);
+        state.write_memory(0x10F, 0x50);
+        for condition in [Cond::C, Cond::NC, Cond::Z, Cond::NZ] {
+            for truism in [true, false] {
+                match condition {
+                    Cond::C => state.registers.set_carry_flag(truism),
+                    Cond::NC => state.registers.set_carry_flag(!truism),
+                    Cond::Z => state.registers.set_zero_flag(truism),
+                    Cond::NZ => state.registers.set_zero_flag(!truism)
+                }
+                state.call_cond_immediate(condition);
+                if truism {
+                    assert_eq!(state.registers.pc, 0x5000, "Did not set PC to immediate");
+                    state.ret();
+                } else {
+                    match condition {
+                        Cond::C => assert_eq!(state.registers.pc, 0x104, "Set PC to immediate"),
+                        Cond::NC => assert_eq!(state.registers.pc, 0x108, "Set PC to immediate"),
+                        Cond::Z => assert_eq!(state.registers.pc, 0x10C, "Set PC to immediate"),
+                        Cond::NZ => assert_eq!(state.registers.pc, 0x110, "Set PC to immediate"),
+                    };
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn check_ret_cond() {
+        let mut state = RunningState::new();
+        state.write_memory(0x100, 0x00);
+        state.write_memory(0x101, 0x50);
+        state.write_memory(0x102, 0x00);
+        state.write_memory(0x103, 0x50);
+        state.write_memory(0x104, 0x00);
+        state.write_memory(0x105, 0x50);
+        state.write_memory(0x106, 0x00);
+        state.write_memory(0x107, 0x50);
+        state.write_memory(0x108, 0x00);
+        state.write_memory(0x109, 0x50);
+        state.call_immediate();
+        for condition in [Cond::C, Cond::NC, Cond::Z, Cond::NZ] {
+            for truism in [true, false] {
+                match condition {
+                    Cond::C => state.registers.set_carry_flag(truism),
+                    Cond::NC => state.registers.set_carry_flag(!truism),
+                    Cond::Z => state.registers.set_zero_flag(truism),
+                    Cond::NZ => state.registers.set_zero_flag(!truism)
+                }
+                state.ret_cond(condition);
+                if truism {
+                    match condition {
+                        Cond::C => assert_eq!(state.registers.pc, 0x102, "Did not set PC to immediate"),
+                        Cond::NC => assert_eq!(state.registers.pc, 0x104, "Did not set PC to immediate"),
+                        Cond::Z => assert_eq!(state.registers.pc, 0x106, "Did not set PC to immediate"),
+                        Cond::NZ => assert_eq!(state.registers.pc, 0x108, "Did not set PC to immediate"),
+                    };
+                    state.call_immediate();
+                } else {
+                    assert_eq!(state.registers.pc, 0x5000, "Set PC to immediate");
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn check_ret_interrupt_handler() {
+        let mut state = RunningState::new();
+        state.interrupts = false;
+        state.call_immediate();
+        state.ret_interrupt_handler();
+        assert_eq!(state.registers.pc, 0x102, "Did not go back to correct location");
+        assert_eq!(state.interrupts, true, "Did not turn on interrupts");
+    }
+
+    #[test]
+    fn check_global_interrupt_handler() {
+        let mut state = RunningState::new();
+        state.ei();
+        assert!(state.interrupts, "Did not turn on interrupts");
+        state.di();
+        assert!(!state.interrupts, "Did not turn off interrupts");
+    }
+
+    #[test]
+    fn check_restart() {
+        let mut state = RunningState::new();
+        for i in 0..8u8 {
+            state.restart(i);
+            let x = ((i >> 1) as u16) << 4;
+            let y;
+            if i % 2 == 1 {
+                y = 8;
+            } else {
+                y = 0;
+            }
+            assert_eq!(state.registers.pc, x + y, "Did not jump to correct location");
+            state.ret();
+            assert_eq!(state.registers.pc, 0x100, "Did not save PC correctly");
+        }
+    }
 }
 

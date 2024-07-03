@@ -32,7 +32,7 @@
         b:0,c:0x13,
         d:0,e:0xd8,
         h:0x01,l:0x4d,
-        pc:0x0000,
+        pc:0x0100,
         sp:0xfffe,
       }
     }
@@ -160,7 +160,7 @@
     pub fn dump_registers(&mut self) {
       println!("Program Counter: {}", self.pc);
       println!("Stack Pointer: {}", self.sp);
-      println!("Accumulator: {}, Flags: {} {} {} {}", self.a, 
+      println!("Accumulator: {}, Flags: Zero:{} Sub:{} Half:{} Carry:{}", self.a, 
         bits(self.f, 7, 1), bits(self.f, 6, 1), bits(self.f, 5, 1), bits(self.f, 4, 1));
       println!("Registers:");
       println!("B: {}, C: {}", self.b, self.c);
