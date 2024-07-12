@@ -3,7 +3,7 @@ extern crate crossterm;
 use cpu::RunningState;
 use cpu::memory::Memory;
 
-use std::thread;
+use std::{thread::{self, sleep}, time::Duration};
 
 
 use crossterm::event::{read, Event, KeyCode, KeyEvent};
@@ -12,69 +12,117 @@ pub mod cpu;
 
 pub fn run(mut state: RunningState) {
 
+  println!("Start");
   let arccopymem = state.get_memory_copy();
 
   //Creates the key input thread
   thread::spawn(move || {
       let mut memcpy = Memory {
-          data: arccopymem
+          data: arccopymem,
       };
-
+      let mut data = 0;
       loop {
           match read().unwrap() {
-              Event::Key(KeyEvent {
+              Event::Key(KeyEvent {//UP
                   code: KeyCode::Up,
                   ..
-              }) => memcpy.write_memory(0xff00, 0b0001_0100),
-              Event::Key(KeyEvent {
+              }) => data = 0b0001_0100,
+              Event::Key(KeyEvent {//Down
                   code: KeyCode::Down,
                   ..
-              }) => memcpy.write_memory(0xff00, 0b0001_1000),
-              Event::Key(KeyEvent {
+              }) => data = 0b0001_1000,
+              Event::Key(KeyEvent {//Left
                   code: KeyCode::Left,
                   ..
-              }) => memcpy.write_memory(0xff00, 0b0001_0010),
-              Event::Key(KeyEvent {
+              }) => data = 0b0001_0010,
+              Event::Key(KeyEvent {//Right
                   code: KeyCode::Right,
                   ..
-              }) => memcpy.write_memory(0xff00, 0b0001_0001),
-              Event::Key(KeyEvent {
+              }) => data = 0b0001_0001,
+              Event::Key(KeyEvent {//A
                   code: KeyCode::Char('z'),
                   ..
-              }) => memcpy.write_memory(0xff00, 0b0010_0010),
-              Event::Key(KeyEvent {
+              }) => data = 0b0010_0010,
+              Event::Key(KeyEvent {//B
                   code: KeyCode::Char('x'),
                   ..
-              }) => memcpy.write_memory(0xff00, 0b0010_0001),
-              Event::Key(KeyEvent {
+              }) => data = 0b0010_0001,
+              Event::Key(KeyEvent {//Start
                   code: KeyCode::Enter,
                   ..
-              }) => memcpy.write_memory(0xff00, 0b0010_1000),
-              Event::Key(KeyEvent {
+              }) => data = 0b0010_1000,
+              Event::Key(KeyEvent {//Select
                   code: KeyCode::Backspace,
                   ..
-              }) => memcpy.write_memory(0xff00, 0b0010_0100),
-              Event::Key(KeyEvent {
+              }) => data = 0b0010_0100,
+              Event::Key(KeyEvent {//Quit
                   code: KeyCode::Esc,
                   ..
               }) => break,
               _ => (),
           }    
+          if data != 0 {
+            memcpy.write_memory(0xff00, data);
+          }
       }
   });
 
-  //loop {
+  let mut counter:u128 = 0;
+
+  state.registers.pc = 0x2c4;
+  //state.registers.d = 0x4a;
+  //state.registers.e = 0x07;
+  sleep(Duration::from_millis(2000));
+  loop {
   //state.logging[0] = true;
   //state.logging[1] = true;
-  //12328 marks end of first loop
-  //Starts infinite loop from line 0x233 
-  for _ in 1..50000 {
+    
       state.next();
-      //let inter = state.interrupts;
-      //println!("IME Allow Interrupt status {inter}, Interrupts: {:04x}", state.read_interrupt_enable() & state.read_interrupt_flags());
+      counter+=1;
+
+      if state.registers.pc == 0x2ca {
+        println!("Input: {}", state.memory.read_memory(0xFF80));
+      }
+
+      if state.registers.pc == 0x2d3 {
+        break;
+      }
+      if state.registers.pc >= 0x29a6 && state.registers.pc < 0x29d3 {
+        println!("Input: {} ", state.memory.read_memory(0xff00));
+      }
+
+      if state.registers.pc == 0x29b0 {
+        println!("29b0");
+        println!("Input: {}", state.memory.read_memory(0xff00));
+        //state.dump_registers();
+      }
+
+      if state.registers.pc == 0x29d4 {
+        println!("29d4");
+        println!("Input: {}", state.memory.read_memory(0xFF00));
+        //state.dump_registers();
+      }
+
+      if counter % 10000000 == 0 {
+        state.dump_registers();
+        //state.dump_tilemap();
+      }
+
+      if state.interrupts {
+        let interrupts = state.read_interrupt_enable() & state.read_interrupt_flags();
+
+        state.handle_interrupt(interrupts);
+      }
   }
+  
+  //for i in 0..250 {
+    //print!("Sprite({i}): ");
+    //for j in 0..16 {
+        //print!("{:04x}, ", state.memory.read_memory(0x8000 + i*16 + j));
+    //}
+    //println!("");
+  //}
   state.dump_registers();
   //state.dump_tilemap();
-
-  //println!("{:?}", arr);
+  
 }

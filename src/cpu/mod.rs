@@ -61,9 +61,9 @@ pub fn decrement(int: &mut u16) {
 }
 
 pub struct RunningState {
-    registers: Registers,
-    memory: Memory,
-    interrupts: bool,
+    pub registers: Registers,
+    pub memory: Memory,
+    pub interrupts: bool,
     pub logging: [bool; 4]
 }
 
@@ -109,6 +109,47 @@ impl RunningState {
         self.read_memory(0xFF0F)
     }
 
+    //Only performs the interrrupt like a normal call
+    pub fn handle_interrupt(&mut self, interrupts: u8) {
+        self.interrupts = false;
+        if (interrupts & 0x1) > 0 {
+            println!("VBLANK Interrupt");
+            //self.logging[0] = true;
+            //self.logging[1] = true;
+            self.call(0, 0x40);
+            self.write_memory(0xFF0F, interrupts & 0b1111_1110);
+        } else if (interrupts & 0x2) > 0 {
+            println!("STAT Interrupt");
+            self.call(0, 0x48);
+            self.write_memory(0xFF0F, interrupts & 0b1111_1101);
+        } else if (interrupts & 0x4) > 0 {
+            self.call(0, 0x50);
+            self.write_memory(0xFF0F, interrupts & 0b1111_1011);
+        } else if (interrupts & 0x8) > 0 {
+            self.call(0, 0x58);
+            self.write_memory(0xFF0F, interrupts & 0b1111_0111);
+        } else if (interrupts & 0x10) > 0 {
+            self.call(0, 0x60);
+            self.write_memory(0xFF0F, interrupts & 0b1110_1111);
+        } else {
+            self.interrupts = true;
+        }
+    }
+
+    fn call(&mut self, msb: u8, lsb: u8) {
+        self.registers.sp -= 1;
+        self.write_memory(
+            usize::from(self.registers.sp),
+            (self.registers.pc >> 8) as u8,
+        );
+        self.registers.sp -= 1;
+        self.write_memory(
+            usize::from(self.registers.sp),
+            (self.registers.pc % 256) as u8,
+        );
+        self.registers.pc = Registers::join_u8(msb, lsb);
+    }
+
     fn read_memory_from_pc(&mut self) -> u8 {
         if self.logging[1] {
             let mut file = OpenOptions::new()
@@ -125,7 +166,7 @@ impl RunningState {
     }
 
     fn write_memory(&mut self, position: usize, data: u8) {
-        self.memory.write_memory(position, data)
+        self.memory.write_memory(position, data);
     }
 
     pub fn dump_registers(&mut self) {
@@ -1000,11 +1041,9 @@ impl RunningState {
         let hl = Wrapping(self.registers.get_hl_value());
         let one = Wrapping(1);
         if value == 1 {
-            self.registers.dump_registers();
             let value = (hl + one).0;
             self.registers.l = (value % 256) as u8;
             self.registers.h = (value >> 8) as u8;
-            self.registers.dump_registers();
             
         } else {
             let value = (hl - one).0;
@@ -1333,6 +1372,7 @@ impl RunningState {
 
     fn jump_to_hl_data(&mut self) {
         self.registers.pc = self.registers.get_hl_value();
+        println!("Jumped to: {:04x}", self.registers.pc);
     }
 
     fn jump_to_immediate(&mut self) {
@@ -1464,6 +1504,7 @@ impl RunningState {
         self.registers.sp += 1;
         self.registers.pc = Registers::join_u8(msb, lsb);
         self.interrupts = true;
+        println!("Returning from interrupt!");
     }
 
     fn restart(&mut self, location: u8) {
@@ -1481,6 +1522,8 @@ impl RunningState {
         if second == 1 {
             position += 0x08;
         }
+
+        println!("Reset Position: {position:04x}");
 
         self.registers.sp -= 1;
         self.write_memory(
