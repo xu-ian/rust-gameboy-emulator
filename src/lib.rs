@@ -1,116 +1,78 @@
-extern crate crossterm;
-
 use cpu::RunningState;
 use cpu::memory::Memory;
+use std::time::Duration;
+use std::time::Instant;
+use std::sync::mpsc::Receiver;
 
-use std::{thread::{self, sleep}, time::Duration};
-
-
-use crossterm::event::{read, Event, KeyCode, KeyEvent};
+use crossterm::event::read;
 
 pub mod cpu;
 
-pub fn run(mut state: RunningState) {
-
-  println!("Start");
-  let arccopymem = state.get_memory_copy();
-
-  //Creates the key input thread
-  thread::spawn(move || {
-      let mut memcpy = Memory {
-          data: arccopymem,
-      };
-      let mut data = 0;
-      loop {
-          match read().unwrap() {
-              Event::Key(KeyEvent {//UP
-                  code: KeyCode::Up,
-                  ..
-              }) => data = 0b0001_0100,
-              Event::Key(KeyEvent {//Down
-                  code: KeyCode::Down,
-                  ..
-              }) => data = 0b0001_1000,
-              Event::Key(KeyEvent {//Left
-                  code: KeyCode::Left,
-                  ..
-              }) => data = 0b0001_0010,
-              Event::Key(KeyEvent {//Right
-                  code: KeyCode::Right,
-                  ..
-              }) => data = 0b0001_0001,
-              Event::Key(KeyEvent {//A
-                  code: KeyCode::Char('z'),
-                  ..
-              }) => data = 0b0010_0010,
-              Event::Key(KeyEvent {//B
-                  code: KeyCode::Char('x'),
-                  ..
-              }) => data = 0b0010_0001,
-              Event::Key(KeyEvent {//Start
-                  code: KeyCode::Enter,
-                  ..
-              }) => data = 0b0010_1000,
-              Event::Key(KeyEvent {//Select
-                  code: KeyCode::Backspace,
-                  ..
-              }) => data = 0b0010_0100,
-              Event::Key(KeyEvent {//Quit
-                  code: KeyCode::Esc,
-                  ..
-              }) => break,
-              _ => (),
-          }    
-          if data != 0 {
-            memcpy.write_memory(0xff00, data);
-          }
-      }
-  });
-
+pub fn run(mut state: RunningState, rx: Receiver<i32>) {
+  
   let mut counter:u128 = 0;
+  //let start = Instant::now();
+  let mut scount = 0;
+  let mut input_countdown = 0;
+  let mut input_type = 0x3F;
 
-  state.registers.pc = 0x2c4;
-  //state.registers.d = 0x4a;
-  //state.registers.e = 0x07;
-  sleep(Duration::from_millis(2000));
+  let mut breakpoint = false;
+
   loop {
   //state.logging[0] = true;
   //state.logging[1] = true;
-    
+      let s = Instant::now();
       state.next();
+      
+      
       counter+=1;
 
-      if state.registers.pc == 0x2ca {
-        println!("Input: {}", state.memory.read_memory(0xFF80));
-      }
+      //if breakpoint {
+      //  println!("Position: {:04x}", state.registers.pc);
+      //  println!("FF00: {:04x}", state.memory.read_memory(0xff00));
+      //  println!("FF80: {:04x}", state.memory.read_memory(0xff80));
+      //  read().unwrap();
+      //}
 
-      if state.registers.pc == 0x2d3 {
-        break;
-      }
-      if state.registers.pc >= 0x29a6 && state.registers.pc < 0x29d3 {
-        println!("Input: {} ", state.memory.read_memory(0xff00));
-      }
+      //if state.registers.pc == 0x29a6 {
+      //  breakpoint = true;
+      //  state.interrupts = false;
+      //}
 
-      if state.registers.pc == 0x29b0 {
-        println!("29b0");
-        println!("Input: {}", state.memory.read_memory(0xff00));
-        //state.dump_registers();
-      }
-
-      if state.registers.pc == 0x29d4 {
-        println!("29d4");
-        println!("Input: {}", state.memory.read_memory(0xFF00));
-        //state.dump_registers();
-      }
-
-      if counter % 10000000 == 0 {
-        state.dump_registers();
+      if state.registers.pc == 0x41e {
+        //state.dump_oam();
         //state.dump_tilemap();
+      }
+
+      if counter % 3_000_000 == 0 {
+        //state.dump_registers();
+        //let x = Instant::now() - start;
+        //println!("Time Spent: {} ms", x.as_micros());
+        //println!("Total action time: {} micros, Average action time: {} micros",scount, scount / 3_000_000);
+        scount = 0;
+        //state.dump_tilemap();
+      }
+
+      let x = Instant::now() - s;
+      scount += x.as_micros();
+
+      match rx.try_recv() {
+        Ok(x) => {
+          input_countdown = 75000;
+          input_type = x;
+        },
+        Err(_) => (),
+      }
+
+      if input_countdown > 0 {
+        state.memory.write_memory(0xFF00, input_type as u8);
+        input_countdown -= 1;
+      } else {
+        state.memory.write_memory(0xFF00, 0xCF);
       }
 
       if state.interrupts {
         let interrupts = state.read_interrupt_enable() & state.read_interrupt_flags();
-
         state.handle_interrupt(interrupts);
       }
   }
@@ -122,7 +84,7 @@ pub fn run(mut state: RunningState) {
     //}
     //println!("");
   //}
-  state.dump_registers();
+  //state.dump_registers();
   //state.dump_tilemap();
   
 }

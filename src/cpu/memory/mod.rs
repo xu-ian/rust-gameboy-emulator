@@ -6,7 +6,6 @@ use std::sync::Mutex;
 //TODO:DMA OAM Transfer
 pub struct Memory {
   pub data: Arc<Mutex<Box<[u8; 0x10000]>>>,
-  //pub dma_transfer:bool,
 }
 
 fn increment(program_counter: &mut u16) {
@@ -21,7 +20,6 @@ impl Memory {
   pub fn new() -> Memory {
     let mut mem = Memory {
       data: Arc::new(Mutex::new(Box::new([0; 0x10000]))),
-      //dma_transfer: false,
     };
     mem.write_memory(0xff00, 0xCF);
     mem.write_memory(0xff01, 0x00);
@@ -79,20 +77,20 @@ impl Memory {
   }
 
   pub fn perform_data_transfer(&mut self) {
-    //let msb = self.read_memory(0xFF46);
-    //for i in 0..0x100 {
-
-    //}
-    //self.dma_transfer = false;
+    let msb = self.read_memory(0xFF46);
+    for i in 0..0x100 {
+      let source = self.read_memory(((msb as u16) << 8) + i);
+      self.write_memory(usize::from(0xFE00 + i), source);
+    }
   }
 
   //TODO: Some memory should not be writeable
   pub fn write_memory(&mut self, position: usize, data: u8) {
     
     (*self.data.lock().unwrap())[position] = data;
-    //if position == 0xFF46 {
-      //self.dma_transfer = true;
-    //}
+    if position == 0xFF46 {
+      self.perform_data_transfer();
+    }
   }
 }
 

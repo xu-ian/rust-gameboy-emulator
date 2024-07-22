@@ -113,13 +113,9 @@ impl RunningState {
     pub fn handle_interrupt(&mut self, interrupts: u8) {
         self.interrupts = false;
         if (interrupts & 0x1) > 0 {
-            println!("VBLANK Interrupt");
-            //self.logging[0] = true;
-            //self.logging[1] = true;
             self.call(0, 0x40);
             self.write_memory(0xFF0F, interrupts & 0b1111_1110);
         } else if (interrupts & 0x2) > 0 {
-            println!("STAT Interrupt");
             self.call(0, 0x48);
             self.write_memory(0xFF0F, interrupts & 0b1111_1101);
         } else if (interrupts & 0x4) > 0 {
@@ -191,6 +187,17 @@ impl RunningState {
                 println!("{} ", x);
             } else {
                 print!("{} ", x);
+            }
+        }
+    }
+
+    pub fn dump_oam(&mut self) {
+        for i in 0xFE00..0xFE9F {
+            let x = self.read_memory(i);
+            if i % 10 == 9 {
+                println!("{:08b} ", x);
+            } else {
+                print!("{:08b} ", x);
             }
         }
     }
@@ -1335,7 +1342,6 @@ impl RunningState {
     fn test_hl_data_bit(&mut self, bit: u8) {
         let regval = self.read_memory(self.registers.get_hl_value());
         let bitval = (regval & (0b0000_0001 << bit)) >> bit;
-        println!("BIT{bit}: {bitval}");
         self.registers.set_half_carry_flag(true);
         self.registers.set_sub_flag(false);
         self.registers.set_zero_flag(bitval == 0);
@@ -1372,7 +1378,7 @@ impl RunningState {
 
     fn jump_to_hl_data(&mut self) {
         self.registers.pc = self.registers.get_hl_value();
-        println!("Jumped to: {:04x}", self.registers.pc);
+        //println!("Jumped to: {:04x}", self.registers.pc);
     }
 
     fn jump_to_immediate(&mut self) {
@@ -1504,7 +1510,6 @@ impl RunningState {
         self.registers.sp += 1;
         self.registers.pc = Registers::join_u8(msb, lsb);
         self.interrupts = true;
-        println!("Returning from interrupt!");
     }
 
     fn restart(&mut self, location: u8) {
@@ -1523,7 +1528,7 @@ impl RunningState {
             position += 0x08;
         }
 
-        println!("Reset Position: {position:04x}");
+        //println!("Reset Position: {position:04x}");
 
         self.registers.sp -= 1;
         self.write_memory(
@@ -1539,12 +1544,14 @@ impl RunningState {
     }
 
     fn halt(&mut self) {
+        println!("Called halt");
         //TODO: if IME is set, wait until an interrupt
         // If IME is not set and none are pending, resume after an interrupt
         // If IME is set and there is a pending handle it? and resume immediately
     }
 
     fn stop(&mut self) {
+        println!("Called stop!");
         //TODO: Stops operations until a user input apparently
     }
 
@@ -1561,6 +1568,7 @@ impl RunningState {
 mod tests {
 
     use super::*;
+    use std::time::Instant;
 
     //Load and Save do not change the flags
 
@@ -1574,6 +1582,19 @@ mod tests {
                     "Memory from immediate was not saved in space pointed by hl");
     }
 
+    #[test]
+    fn performance_load_immediate_to_hl() {
+        let start = Instant::now();
+        let mut state = RunningState::new();
+        for _ in 0..1_000_000 {
+            state.load_immediate_to_hl();
+            if state.registers.pc > 0xFF00 {
+                state.registers.pc = 0;
+            }
+        }
+        let x = Instant::now() - start;
+        println!("Total {} micros", x.as_micros());
+    }
     #[test]
     fn check_load_immediate_register() {
         let mut state = RunningState::new();
@@ -1735,7 +1756,6 @@ mod tests {
         //Normal case
         let mut state = RunningState::new();
         let current_hl_value = state.registers.get_hl_value();
-        println!("{}", current_hl_value);
         state.write_memory(usize::from(current_hl_value), 0xFF);
         state.registers.a = 0x00;
         state.load_hl_address_to_a_dec();
