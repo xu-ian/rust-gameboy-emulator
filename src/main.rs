@@ -21,8 +21,6 @@ use egui::Shape;
 use egui::Stroke;
 use egui::Vec2;
 
-use crossterm::event::{read, Event, KeyCode, KeyEvent};
-
 use gameboy::cpu;
 
 fn main() {
@@ -30,11 +28,11 @@ fn main() {
     let memclone = state.get_memory_copy();
 
     //Loads the rom from file system to a vector
-    let bytes = read_file("./Tetris.gb").unwrap();
+    let bytes = read_file("./Tetris2.gb").unwrap();
     //Loads the contents of the rom into the memory
     memclone.lock().unwrap()[..bytes.len()].clone_from_slice(bytes.as_slice());
 
-    let (tx, rx): (Sender<i32>, Receiver<i32>) = mpsc::channel();
+    let (tx, rx): (Sender<u8>, Receiver<u8>) = mpsc::channel();
 
     thread::spawn(move || {
         gameboy::run(state, rx);
@@ -54,14 +52,14 @@ fn main() {
 struct MyEguiApp {
     memory: Arc<Mutex<Box<[u8; 65536]>>>,
     scanline : [[u8; 160]; 144],
-    sender: Sender<i32>,
+    sender: Sender<u8>,
 
 }
 
 //type Sprite = [u8; 16];
 
 impl MyEguiApp {
-    fn new(memory: Arc<Mutex<Box<[u8; 65536]>>>, sender: Sender<i32>) -> Self {
+    fn new(memory: Arc<Mutex<Box<[u8; 65536]>>>, sender: Sender<u8>) -> Self {
         // Customize egui here with cc.egui_ctx.set_fonts and cc.egui_ctx.set_visuals.
         // Restore app state using cc.storage (requires the "persistence" feature).
         // Use the cc.gl (a glow::Context) to create graphics shaders and buffers that you can use
@@ -241,37 +239,50 @@ impl MyEguiApp {
 
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        ctx.input(|input| {
-            
-            if input.key_down(egui::Key::ArrowUp) {
-                println!("Up");
-                self.sender.send(0b0001_1011u8 as i32).expect("Could not send the data");
-            } else if input.key_down(egui::Key::ArrowDown) {
-                println!("Down");
-                self.sender.send(0b0001_0111 as i32).expect("Could not send the data");
-            } else if input.key_down(egui::Key::ArrowLeft) {
-                println!("Left");
-                self.sender.send(0b0001_1101 as i32).expect("Could not send the data");
-            } else if input.key_down(egui::Key::ArrowRight) {
-                println!("Right");
-                self.sender.send(0b0001_1110 as i32).expect("Could not send the data");
-            } else if input.key_down(egui::Key::Z) {
-                println!("A");
-                self.sender.send(0b0010_1101 as i32).expect("Could not send the data");
-            } else if input.key_down(egui::Key::X) {
-                println!("B");
-                self.sender.send(0b0010_1110 as i32).expect("Could not send the data");
-            } else if input.key_down(egui::Key::Enter) {
-                println!("Start");
-                self.sender.send(0b0010_0111 as i32).expect("Could not send the data");
-            } else if input.key_down(egui::Key::Backspace) {
-                println!("Select");
-                self.sender.send(0b0010_1011 as i32).expect("Could not send the data");
-            } else {
-                self.sender.send(0x3f as i32).expect("Could not send the data");
+        ctx.input(|input| {     
+            if input.key_pressed(egui::Key::ArrowUp) {
+                //println!("Up");
+                self.sender.send(2).expect("Could not send the data");
+            } else if input.key_pressed(egui::Key::ArrowDown) {
+                //println!("Down");
+                self.sender.send(3).expect("Could not send the data");
+            } else if input.key_pressed(egui::Key::ArrowLeft) {
+                //println!("Left");
+                self.sender.send(1).expect("Could not send the data");
+            } else if input.key_pressed(egui::Key::ArrowRight) {
+                //println!("Right");
+                self.sender.send(0).expect("Could not send the data");
+            } else if input.key_pressed(egui::Key::Z) {
+                //println!("A");
+                self.sender.send(4).expect("Could not send the data");
+            } else if input.key_pressed(egui::Key::X) {
+                //println!("B");
+                self.sender.send(5).expect("Could not send the data");
+            } else if input.key_pressed(egui::Key::Enter) {
+                //println!("Start");
+                self.sender.send(7).expect("Could not send the data");
+            } else if input.key_pressed(egui::Key::Backspace) {
+                //println!("Select");
+                self.sender.send(6).expect("Could not send the data");
+            } else if input.key_released(egui::Key::ArrowUp) {
+                self.sender.send(10).expect("Could not send the data");
+            } else if input.key_released(egui::Key::ArrowDown) {
+                self.sender.send(11).expect("Could not send the data");
+            } else if input.key_released(egui::Key::ArrowLeft) { 
+                self.sender.send(9).expect("Could not send the data");
+            } else if input.key_released(egui::Key::ArrowRight) { 
+                self.sender.send(8).expect("Could not send the data");
+            } else if input.key_released(egui::Key::Z) { 
+                self.sender.send(12).expect("Could not send the data");
+            } else if input.key_released(egui::Key::X) { 
+                self.sender.send(13).expect("Could not send the data");
+            } else if input.key_released(egui::Key::Backspace) { 
+                self.sender.send(15).expect("Could not send the data");
+            } else if input.key_released(egui::Key::Enter) {
+                self.sender.send(14).expect("Could not send the data");
             }
         });
-        //let start = Instant::now();
+
         if self.ppu_enable() {
             for _ in 0..154 {
                 let ly = Wrapping(self.read_ly());

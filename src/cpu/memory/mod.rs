@@ -84,10 +84,20 @@ impl Memory {
     }
   }
 
+  pub fn update_joystick(&mut self, data: u8) {
+    (*self.data.lock().unwrap())[0xff00] = data;
+  }
+
   //TODO: Some memory should not be writeable
   pub fn write_memory(&mut self, position: usize, data: u8) {
     
-    (*self.data.lock().unwrap())[position] = data;
+    if position == 0xff00 {
+      let dat = (*self.data.lock().unwrap())[position];
+      (*self.data.lock().unwrap())[position] = (data & 0xf0) & (dat & 0x0f);
+    } else if position > 0x7fff {
+      (*self.data.lock().unwrap())[position] = data;
+    }
+    
     if position == 0xFF46 {
       self.perform_data_transfer();
     }

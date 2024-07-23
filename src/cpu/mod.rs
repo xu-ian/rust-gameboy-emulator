@@ -64,6 +64,7 @@ pub struct RunningState {
     pub registers: Registers,
     pub memory: Memory,
     pub interrupts: bool,
+    pub joypad: [[u8; 4]; 2],
     pub logging: [bool; 4]
 }
 
@@ -74,6 +75,7 @@ impl RunningState {
             registers: Registers::new(),
             memory: Memory::new(),
             interrupts: false,
+            joypad: [[1,1,1,1],[1,1,1,1]],
             logging: [false, false, false, false],    
         }
     }
@@ -216,6 +218,9 @@ impl RunningState {
                 .unwrap();
 
             writeln!(file, "{}", instruction.to_string()).expect("Could not open file");
+        }
+        if self.logging[3] {
+            println!("Instruction: {}", instruction.to_string());
         }
         match instruction {
             //Saves Immediate into location specified by HL
@@ -1414,6 +1419,9 @@ impl RunningState {
     }
 
     fn jump_rel_cond_immediate(&mut self, cond: Cond) {
+        if self.logging[3] {
+            println!("Relative jump");
+        }
         let zero_flag = self.registers.get_zero_flag();
         let carry_flag = self.registers.get_carry_flag();
         let perform_action;
@@ -1424,12 +1432,18 @@ impl RunningState {
             Cond::C => perform_action = carry_flag != 0            
         }
         let rel = self.read_memory_from_pc() as i8;
+        if self.logging[3] {
+            println!("Perform action: {}", perform_action);
+        }
         if perform_action {
             if rel > 0 {
                 self.registers.pc += rel as u16;
             } else {
                 self.registers.pc -= (-rel) as u16;
             }
+        }
+        if self.logging[3] {
+            println!("Result: {:04x}", self.registers.pc);
         }
     }
 

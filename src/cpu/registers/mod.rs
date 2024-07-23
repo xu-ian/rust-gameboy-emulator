@@ -158,14 +158,14 @@
     }
 
     pub fn dump_registers(&mut self) {
-      println!("Program Counter: {}", self.pc);
-      println!("Stack Pointer: {}", self.sp);
+      println!("Program Counter: {:04x}", self.pc);
+      println!("Stack Pointer: {:04x}", self.sp);
       println!("Accumulator: {}, Flags: Zero:{} Sub:{} Half:{} Carry:{}", self.a, 
         bits(self.f, 7, 1), bits(self.f, 6, 1), bits(self.f, 5, 1), bits(self.f, 4, 1));
       println!("Registers:");
-      println!("B: {}, C: {}", self.b, self.c);
-      println!("D: {}, E: {}", self.d, self.e);
-      println!("H: {}, L: {}", self.h, self.l);
+      println!("B: {:02x}, C: {:02x}", self.b, self.c);
+      println!("D: {:02x}, E: {:02x}", self.d, self.e);
+      println!("H: {:02x}, L: {:02x}", self.h, self.l);
     }
     
     pub fn get_hl_value(&self) -> u16 {
