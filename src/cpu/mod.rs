@@ -14,7 +14,6 @@ use registers::Registers;
 use std::num::Wrapping;
 use std::sync::Arc;
 use std::sync::Mutex;
-use std::fs;
 use std::fs::OpenOptions;
 use std::io::prelude::*;
 
@@ -65,6 +64,7 @@ pub struct RunningState {
     pub memory: Memory,
     pub interrupts: bool,
     pub joypad: [[u8; 4]; 2],
+    pub input_type: u8,
     pub logging: [bool; 4]
 }
 
@@ -76,6 +76,7 @@ impl RunningState {
             memory: Memory::new(),
             interrupts: false,
             joypad: [[1,1,1,1],[1,1,1,1]],
+            input_type: 0x30u8,
             logging: [false, false, false, false],    
         }
     }
@@ -96,23 +97,31 @@ impl RunningState {
         self.registers.write_register(byte, value)
     }
 
+    fn join_bits(&self, typ: usize) -> u8 {
+        self.joypad[typ][0] + (self.joypad[typ][1] << 1) + (self.joypad[typ][2] << 2) + (self.joypad[typ][3] << 3)
+    }
+
     fn read_memory(&mut self, position: u16) -> u8 {
-        if position == 0xff00 && self.logging[3] {
-            fs::write("./src/log.txt", "Reading from joypad!\n").expect("File could not be written to");
+        if position == 0xff00 {
+            if (!self.input_type & 0x30) == 0x20 {
+                self.join_bits(1)
+            } else if (!self.input_type & 0x30) == 0x10 {
+                self.join_bits(0)
+            } else {
+                0x3f
+            }
+        } else {
+            self.memory.read_memory(position)
         }
-        self.memory.read_memory(position)
     }
 
-    pub fn read_interrupt_enable(&mut self) -> u8 {
-        self.read_memory(0xFFFF)
-    }
-
-    pub fn read_interrupt_flags(&mut self) -> u8 {
-        self.read_memory(0xFF0F)
+    pub fn read_active_interrupt(&mut self) -> u8 {
+        self.read_memory(0xFFFF) & self.read_memory(0xFF0F)
     }
 
     //Only performs the interrrupt like a normal call
-    pub fn handle_interrupt(&mut self, interrupts: u8) {
+    pub fn handle_interrupt(&mut self) {
+        let interrupts = self.read_active_interrupt();
         self.interrupts = false;
         if (interrupts & 0x1) > 0 {
             self.call(0, 0x40);
@@ -164,7 +173,11 @@ impl RunningState {
     }
 
     fn write_memory(&mut self, position: usize, data: u8) {
-        self.memory.write_memory(position, data);
+        if position == 0xff00 {
+            self.input_type = data;
+        } else {
+            self.memory.write_memory(position, data);
+        }
     }
 
     pub fn dump_registers(&mut self) {
@@ -680,17 +693,20 @@ impl RunningState {
 
     fn add_register_to_a_carry(&mut self, register: Register) {
         let value = self.read_register(register);
-        self.add_x_to_a(value, 1);
+        let carry = self.registers.get_carry_flag();
+        self.add_x_to_a(value, carry);
     }
 
     fn add_hl_data_to_a_carry(&mut self) {
         let value = self.read_memory(self.registers.get_hl_value());
-        self.add_x_to_a(value, 1);
+        let carry = self.registers.get_carry_flag();
+        self.add_x_to_a(value, carry);
     }
 
     fn add_immediate_to_a_carry(&mut self) {
         let value = self.read_memory_from_pc();
-        self.add_x_to_a(value, 1);
+        let carry = self.registers.get_carry_flag();
+        self.add_x_to_a(value, carry);
     }
 
     fn add_x_to_a(&mut self, add_value: u8, carry: u8) {
@@ -743,17 +759,20 @@ impl RunningState {
 
     fn sub_register_to_a_carry(&mut self, register: Register) {
         let value = self.read_register(register);
-        self.sub_x_to_a(value, 1);
+        let carry = self.registers.get_carry_flag();
+        self.sub_x_to_a(value, carry);
     }
 
     fn sub_immediate_to_a_carry(&mut self) {
         let value = self.read_memory_from_pc();
-        self.sub_x_to_a(value, 1);
+        let carry = self.registers.get_carry_flag();
+        self.sub_x_to_a(value, carry);
     }
 
     fn sub_hl_data_to_a_carry(&mut self) {
         let value = self.read_memory(self.registers.get_hl_value());
-        self.sub_x_to_a(value, 1);
+        let carry = self.registers.get_carry_flag();
+        self.sub_x_to_a(value, carry);
     }
 
     fn sub_x_to_a(&mut self, sub_value: u8, carry: u8) {
@@ -976,9 +995,10 @@ impl RunningState {
     }
 
     fn decimal_adjust_accumulator(&mut self) {
+        //println!("This triggers");
         let mut t = 0u8;
-
-        if self.registers.get_half_carry_flag() == 1 || ((self.registers.a & 0xF) > 9) {
+        //self.dump_registers();
+        if self.registers.get_half_carry_flag() == 1 || ((self.registers.a & 0x0F) > 0x09) {
             t += 1;
         }
 
@@ -994,21 +1014,30 @@ impl RunningState {
         let six = Wrapping(0x06);
         let sixty = Wrapping(0x60);
         if t == 1 {
+            //println!("Halfcarry");
             if self.registers.get_sub_flag() == 1 {
+                //println!("Sub");
                 self.registers.a = (alpha - six).0;
             } else {
+                //println!("Add");
                 self.registers.a = (alpha + six).0;
             }
         } else if t == 2 {
+            //println!("Carry");
             if self.registers.get_sub_flag() == 1 {
+                //println!("Sub");
                 self.registers.a = (alpha - sixty).0;
             } else {
+                //println!("Add");
                 self.registers.a = (alpha + sixty).0;
             }
         } else if t == 3 {
+            //println!("Carry + Halfcarry");
             if self.registers.get_sub_flag() == 1 {
+                //println!("Sub");
                 self.registers.a = (alpha - sixty - six).0;
             } else {
+                //println!("Add");
                 self.registers.a = (alpha + sixty + six).0;
             }
         }

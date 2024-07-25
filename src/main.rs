@@ -5,10 +5,11 @@ use std::num::Wrapping;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
-//use std::time::Duration;
-//use std::time::Instant;
+use std::env;
 use std::sync::mpsc::{Sender, Receiver};
 use std::sync::mpsc;
+use std::time::Duration;
+use std::time::Instant;
 
 
 use eframe::egui;
@@ -26,9 +27,12 @@ use gameboy::cpu;
 fn main() {
     let state = cpu::RunningState::new();
     let memclone = state.get_memory_copy();
-
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 {
+        panic!("Not enough input variables: please give the path to the game you wish to load")
+    }
     //Loads the rom from file system to a vector
-    let bytes = read_file("./Tetris2.gb").unwrap();
+    let bytes = read_file(&args[1]).unwrap();
     //Loads the contents of the rom into the memory
     memclone.lock().unwrap()[..bytes.len()].clone_from_slice(bytes.as_slice());
 
@@ -99,12 +103,10 @@ impl MyEguiApp {
                 let int_flag = self.read_memory(0xFF0F);
                 self.write_memory(0xFF0F, int_flag | 0b0000_0010);
             }
-        } else {
-            self.write_memory(0xFF41, dat & 0b1111_1101);   
-            if lyc + 1 == ly {//Request VBlank Interrupt
-                let int_flag = self.read_memory(0xFF0F);
-                self.write_memory(0xFF0F, int_flag | 0b0000_0001);
-            }
+        } else if lyc + 1 == ly {//Request VBlank Interrupt
+            self.write_memory(0xFF41, dat & 0b1111_1101);
+            let int_flag = self.read_memory(0xFF0F);
+            self.write_memory(0xFF0F, int_flag | 0b0000_0001);
         }
     }
 
@@ -239,6 +241,8 @@ impl MyEguiApp {
 
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+        let s = Instant::now();
+
         ctx.input(|input| {     
             if input.key_pressed(egui::Key::ArrowUp) {
                 //println!("Up");
@@ -262,9 +266,9 @@ impl eframe::App for MyEguiApp {
                 //println!("Start");
                 self.sender.send(7).expect("Could not send the data");
             } else if input.key_pressed(egui::Key::Backspace) {
-                //println!("Select");
                 self.sender.send(6).expect("Could not send the data");
-            } else if input.key_released(egui::Key::ArrowUp) {
+            } 
+            if input.key_released(egui::Key::ArrowUp) {
                 self.sender.send(10).expect("Could not send the data");
             } else if input.key_released(egui::Key::ArrowDown) {
                 self.sender.send(11).expect("Could not send the data");
@@ -283,16 +287,16 @@ impl eframe::App for MyEguiApp {
             }
         });
 
+        let mut pixelcount = 0;
         if self.ppu_enable() {
+            let mut ly = Wrapping(self.read_ly());
+            let lyc = Wrapping(self.read_lyc());
+            let scx = Wrapping(self.read_scx());
+            let scy = Wrapping(self.read_scy());
             for _ in 0..154 {
-                let ly = Wrapping(self.read_ly());
-                let lyc = Wrapping(self.read_lyc());
-                
-                let scx = Wrapping(self.read_scx());
-                let scy = Wrapping(self.read_scy());
-    
                 if ly.0 < 144 {
                     for i in 0..160 {
+                        pixelcount += 1;
                         let safe_i = Wrapping(i);
                         //Retrieves the tile number, from the 32x32 tile map
                         let tile_number = self.read_background((scx + safe_i).0 / 8, (scy + ly).0 / 8);
@@ -305,34 +309,39 @@ impl eframe::App for MyEguiApp {
 
                         if self.window_enable() {
                             println!("Window enabled");
-                            let seven = Wrapping(7);
+                            let seven: Wrapping<u8> = Wrapping(7);
                             let tile_number = self.read_window((scx + safe_i - seven).0 / 8, (scy + ly).0 / 8);
-                            let _sprite_line = self.get_sprite_line(tile_number, (scy + ly).0 % 8);
+                            let _sprite_line: [u8; 2] = self.get_sprite_line(tile_number, (scy + ly).0 % 8);
                         }
                         
                     }
                 }
 
-                if self.obj_enable() {
-                    for n in 0..40 {
-                        let object = self.read_oam(n);
-                        if object[0] > 15 && object[0] < 160 && object[1] > 7 && object[1] < 160 {
-                            for x in 0..8 {
-                                for y in 0..8 {
-                                    let tile_number = object[2];
-                                    let sprite_line = self.get_sprite_line(tile_number, y % 8);
-                                    self.scanline[usize::from(object[0] + y - 16)][usize::from(object[1] + x - 8)] = self.get_sprite_byte(sprite_line, x % 8);
-                                }
-                            }
-                        }
-                    }           
-                }
-
-                self.update_ly((ly + Wrapping(1)).0);
+                ly = ly + Wrapping(1);
+                self.update_ly(ly.0);
                 self.set_ly_equal(lyc.0, ly.0);
     
             } 
+
         }
+        if self.obj_enable() {
+            for n in 0..40 {
+
+                let object = self.read_oam(n);
+                if object[0] > 15 && object[0] < 160 && object[1] > 7 && object[1] < 160 {
+                    for x in 0..8 {
+                        for y in 0..8 {
+                            pixelcount += 1;
+                            let tile_number = object[2];
+                            let sprite_line = self.get_sprite_line(tile_number, y % 8);
+                            self.scanline[usize::from(object[0] + y - 16)][usize::from(object[1] + x - 8)] = self.get_sprite_byte(sprite_line, x % 8);
+                        }
+                    }
+                }
+            }           
+        }    
+    
+
         egui::CentralPanel::default().show(ctx, |ui| {
             let (_response, painter) =
                 ui.allocate_painter(Vec2::new(ui.available_width(), 800.0), Sense::hover());
@@ -365,10 +374,13 @@ impl eframe::App for MyEguiApp {
                 }
             }
         });
+        let end = Instant::now() - s;
+        if ctx.frame_nr() % 10 == 0 {
+            println!("Update. Pixel updates: {}, Time taken: {} micros", 10*pixelcount, 10*end.as_micros());            
+        }
         //This gives around 60 frames a second
         //let x = Instant::now() - start;
         //println!("Time Spent: {}", x.as_millis());
-        ctx.request_repaint();
-        //ctx.request_repaint_after(Duration::from_millis(16));
+        ctx.request_repaint_after(Duration::from_millis(16));
     }
 }

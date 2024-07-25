@@ -91,10 +91,7 @@ impl Memory {
   //TODO: Some memory should not be writeable
   pub fn write_memory(&mut self, position: usize, data: u8) {
     
-    if position == 0xff00 {
-      let dat = (*self.data.lock().unwrap())[position];
-      (*self.data.lock().unwrap())[position] = (data & 0xf0) & (dat & 0x0f);
-    } else if position > 0x7fff {
+    if position > 0x7fff {
       (*self.data.lock().unwrap())[position] = data;
     }
     
