@@ -1,6 +1,7 @@
 pub mod instruction;
 pub mod memory;
 pub mod registers;
+pub mod audio;
 
 use instruction::Dest;
 use instruction::Instruction;
@@ -175,7 +176,19 @@ impl RunningState {
     fn write_memory(&mut self, position: usize, data: u8) {
         if position == 0xff00 {
             self.input_type = data;
-        } else {
+        } else if position == 0xff14 && data & 0x80 > 0 {
+            let mem = self.memory.read_memory(0xff26);
+            self.memory.write_memory(0xff26, mem | 0x01);
+        } else if position == 0xff19 && data & 0x80 > 0 {
+            let mem = self.memory.read_memory(0xff26);
+            self.memory.write_memory(0xff26, mem | 0x02);
+        } else if position == 0xff1e && data & 0x80 > 0 {
+            let mem = self.memory.read_memory(0xff26);
+            self.memory.write_memory(0xff26, mem | 0x04);
+        } else if position == 0xff23 && data & 0x80 > 0 {
+            let mem = self.memory.read_memory(0xff26);
+            self.memory.write_memory(0xff26, mem | 0x08);
+        }else {
             self.memory.write_memory(position, data);
         }
     }

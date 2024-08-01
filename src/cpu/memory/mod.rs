@@ -3,7 +3,6 @@ use std::num::Wrapping;
 use std::sync::Arc;
 use std::sync::Mutex;
 
-//TODO:DMA OAM Transfer
 pub struct Memory {
   pub data: Arc<Mutex<Box<[u8; 0x10000]>>>,
 }
@@ -88,7 +87,7 @@ impl Memory {
     (*self.data.lock().unwrap())[0xff00] = data;
   }
 
-  //TODO: Some memory should not be writeable
+  //TODO: Some memory should not be writeable, continue updating rules until thorough
   pub fn write_memory(&mut self, position: usize, data: u8) {
     
     if position > 0x7fff {

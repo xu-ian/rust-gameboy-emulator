@@ -10,5 +10,5 @@ Basic Gameboy emulator written in rust with egui for graphics.
 # Work in progress:
 - Implement audio system
 - Implement Timer
-- Ability to load gameboy files on runtime
-- Improve running performance
+- Improve running performance more
+- Implement MBCs

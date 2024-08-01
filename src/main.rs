@@ -27,6 +27,7 @@ use gameboy::cpu;
 fn main() {
     let state = cpu::RunningState::new();
     let memclone = state.get_memory_copy();
+    //let memclone2 = state.get_memory_copy();
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         panic!("Not enough input variables: please give the path to the game you wish to load")
@@ -42,6 +43,10 @@ fn main() {
         gameboy::run(state, rx);
     });
 
+    thread::spawn(move || {
+        //gameboy::cpu::audio::run(memclone2)
+    });
+
     let native_options = eframe::NativeOptions::default();
     eframe::run_native(
         "My egui App",
@@ -52,15 +57,13 @@ fn main() {
 
 }
 
-//#[derive(Default)]
+
 struct MyEguiApp {
     memory: Arc<Mutex<Box<[u8; 65536]>>>,
     scanline : [[u8; 160]; 144],
     sender: Sender<u8>,
 
 }
-
-//type Sprite = [u8; 16];
 
 impl MyEguiApp {
     fn new(memory: Arc<Mutex<Box<[u8; 65536]>>>, sender: Sender<u8>) -> Self {
@@ -241,29 +244,22 @@ impl MyEguiApp {
 
 impl eframe::App for MyEguiApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
-        let s = Instant::now();
+        //let s = Instant::now();
 
         ctx.input(|input| {     
             if input.key_pressed(egui::Key::ArrowUp) {
-                //println!("Up");
                 self.sender.send(2).expect("Could not send the data");
             } else if input.key_pressed(egui::Key::ArrowDown) {
-                //println!("Down");
                 self.sender.send(3).expect("Could not send the data");
             } else if input.key_pressed(egui::Key::ArrowLeft) {
-                //println!("Left");
                 self.sender.send(1).expect("Could not send the data");
             } else if input.key_pressed(egui::Key::ArrowRight) {
-                //println!("Right");
                 self.sender.send(0).expect("Could not send the data");
             } else if input.key_pressed(egui::Key::Z) {
-                //println!("A");
                 self.sender.send(4).expect("Could not send the data");
             } else if input.key_pressed(egui::Key::X) {
-                //println!("B");
                 self.sender.send(5).expect("Could not send the data");
             } else if input.key_pressed(egui::Key::Enter) {
-                //println!("Start");
                 self.sender.send(7).expect("Could not send the data");
             } else if input.key_pressed(egui::Key::Backspace) {
                 self.sender.send(6).expect("Could not send the data");
@@ -287,7 +283,6 @@ impl eframe::App for MyEguiApp {
             }
         });
 
-        let mut pixelcount = 0;
         if self.ppu_enable() {
             let mut ly = Wrapping(self.read_ly());
             let lyc = Wrapping(self.read_lyc());
@@ -296,7 +291,6 @@ impl eframe::App for MyEguiApp {
             for _ in 0..154 {
                 if ly.0 < 144 {
                     for i in 0..160 {
-                        pixelcount += 1;
                         let safe_i = Wrapping(i);
                         //Retrieves the tile number, from the 32x32 tile map
                         let tile_number = self.read_background((scx + safe_i).0 / 8, (scy + ly).0 / 8);
@@ -326,12 +320,10 @@ impl eframe::App for MyEguiApp {
         }
         if self.obj_enable() {
             for n in 0..40 {
-
                 let object = self.read_oam(n);
                 if object[0] > 15 && object[0] < 160 && object[1] > 7 && object[1] < 160 {
                     for x in 0..8 {
                         for y in 0..8 {
-                            pixelcount += 1;
                             let tile_number = object[2];
                             let sprite_line = self.get_sprite_line(tile_number, y % 8);
                             self.scanline[usize::from(object[0] + y - 16)][usize::from(object[1] + x - 8)] = self.get_sprite_byte(sprite_line, x % 8);
@@ -374,13 +366,11 @@ impl eframe::App for MyEguiApp {
                 }
             }
         });
-        let end = Instant::now() - s;
-        if ctx.frame_nr() % 10 == 0 {
-            println!("Update. Pixel updates: {}, Time taken: {} micros", 10*pixelcount, 10*end.as_micros());            
-        }
+        //let end = Instant::now() - s;
+        /*if ctx.frame_nr() % 10 == 0 {
+            println!("Time taken: {} micros", 10*end.as_micros());            
+        }*/
         //This gives around 60 frames a second
-        //let x = Instant::now() - start;
-        //println!("Time Spent: {}", x.as_millis());
         ctx.request_repaint_after(Duration::from_millis(16));
     }
 }
