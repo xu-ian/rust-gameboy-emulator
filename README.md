@@ -8,7 +8,5 @@ Basic Gameboy emulator written in rust with egui for graphics.
     - Using tetris: ``./target/release/gameboy.exe "./tetris.gb"``
 
 # Work in progress:
-- Implement audio system
-- Implement Timer
-- Improve running performance more
+- Implement Channel 3 and 4 for audio system
 - Implement MBCs

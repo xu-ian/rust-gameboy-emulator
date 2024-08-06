@@ -2,6 +2,9 @@ pub mod instruction;
 pub mod memory;
 pub mod registers;
 pub mod audio;
+pub mod banks;
+
+use banks::MBC;
 
 use instruction::Dest;
 use instruction::Instruction;
@@ -64,12 +67,28 @@ pub struct RunningState {
     pub registers: Registers,
     pub memory: Memory,
     pub interrupts: bool,
+    //User Input Variables
     pub joypad: [[u8; 4]; 2],
     pub input_type: u8,
-    pub logging: [bool; 4]
+    //Testing Variables
+    pub logging: [bool; 4],
+    //MBC variables
+    pub banks: banks::Banks,
 }
 
 impl RunningState {
+
+    pub fn new_plus(cart_type:u8, rom:u8, ram:u8) -> RunningState {
+        RunningState {
+            registers: Registers::new(),
+            memory: Memory::new(),
+            interrupts: false,
+            joypad: [[1,1,1,1],[1,1,1,1]],
+            input_type: 0x30u8,
+            logging: [false, false, false, false],
+            banks: banks::Banks::new(cart_type, rom, ram),
+        }
+    }
 
     pub fn new() -> RunningState {
         RunningState {
@@ -78,7 +97,8 @@ impl RunningState {
             interrupts: false,
             joypad: [[1,1,1,1],[1,1,1,1]],
             input_type: 0x30u8,
-            logging: [false, false, false, false],    
+            logging: [false, false, false, false],
+            banks: banks::Banks::new(0, 0, 0),
         }
     }
 
@@ -111,7 +131,13 @@ impl RunningState {
             } else {
                 0x3f
             }
-        } else {
+        } else if position < 0x4000 {
+            self.banks.read_rom_0(usize::from(position))  
+        } else if position >= 0x4000 && position < 0x8000 {
+            self.banks.read_rom(usize::from(position))
+        } else if position >= 0xA000 && position < 0xC000 {
+            self.banks.read_ram(usize::from(position))
+        }  else {
             self.memory.read_memory(position)
         }
     }
@@ -158,6 +184,12 @@ impl RunningState {
         self.registers.pc = Registers::join_u8(msb, lsb);
     }
 
+    fn inc_it(&mut self) {
+        let value = Wrapping(self.registers.pc);
+        let one = Wrapping(1u16);
+        self.registers.pc = (value + one).0;
+    }
+
     fn read_memory_from_pc(&mut self) -> u8 {
         if self.logging[1] {
             let mut file = OpenOptions::new()
@@ -168,9 +200,14 @@ impl RunningState {
 
             write!(file, "PC: {:04x}, ", self.registers.pc).expect("Could not open file");
         }
-        let data = self.memory.read_memory_from_pc(&mut self.registers);
+        if self.registers.pc < 0x8000 || (self.registers.pc >= 0xA000 && self.registers.pc <= 0xC000){
+            let position = self.registers.pc;
+            self.inc_it();
+            self.read_memory(position)
+        } else {
+            self.memory.read_memory_from_pc(&mut self.registers)
+        }
         //println!("{:#04x}", data);
-        data
     }
 
     fn write_memory(&mut self, position: usize, data: u8) {
@@ -188,7 +225,40 @@ impl RunningState {
         } else if position == 0xff23 && data & 0x80 > 0 {
             let mem = self.memory.read_memory(0xff26);
             self.memory.write_memory(0xff26, mem | 0x08);
-        }else {
+        } else if position < 0x8000 { // Do not write to switchable ROM
+            //println!("Bank:{:?}", self.banks.mbc);
+            match self.banks.mbc {
+                MBC::NoMBC => {
+                    println!("Position: {:04x}, data: {:02x}", position, data);
+                    if position >= 0x2000 && position < 0x4000 {
+                        if data & 0x1f == 0 {
+                            self.banks.set_rom_bank_lower(1);
+                        } else {
+                            self.banks.set_rom_bank_lower(data & 0x1f);
+                        }
+                    }
+                },
+                MBC::MBC1 => {
+                    //println!("Position: {:04x}, data: {:02x}", position, data);
+                    if position < 0x2000 && data == 0xA {
+                        self.banks.enable_ram();
+                    } else if position >= 0x2000 && position < 0x4000 {
+                        if data & 0x1f == 0 {
+                            self.banks.set_rom_bank_lower(1);
+                        } else {
+                            self.banks.set_rom_bank_lower(data & 0x1f);
+                        }
+                    } else if position >= 0x4000 && position < 0x6000 {
+                        self.banks.set_rom_bank_upper_or_ram(data & 0x03);
+                    } else if position >= 0x6000 && position < 0x8000 {
+                        self.banks.set_banking_mode(data & 0x1);
+                    }
+                },
+                _ => ()
+            }
+        } else if position >= 0xA000 && position < 0xC000 && self.banks.ram_enable { // Writing to switchable RAM
+            self.banks.write_ram(position, data);
+        } else {
             self.memory.write_memory(position, data);
         }
     }

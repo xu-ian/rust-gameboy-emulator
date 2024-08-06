@@ -10,11 +10,15 @@ pub mod cpu;
 pub fn run(mut state: RunningState, rx: Receiver<u8>) {
   
   let mut start = Instant::now();
-
+  let mut s = Instant::now();
   //let mut breakpoint = false;
-
+  let mut counter = 0;
   loop {
-
+    counter +=1;
+    if counter % 3_000_000 == 0 {
+      println!("Total time for a million actions: {}", (Instant::now() - s).as_micros());
+      s = Instant::now();
+    }
     state.next();
 
   
@@ -23,9 +27,13 @@ pub fn run(mut state: RunningState, rx: Receiver<u8>) {
         read().unwrap();
       }*/
 
-    if state.registers.pc == 0x2cd {
+    if state.registers.pc == 0x2d6 {
+      //state.logging[0] = true;
+      //state.logging[1] = true;
       //state.dump_oam();
       //state.dump_tilemap();
+      //state.banks.dump_rom_bank(1);
+      //state.banks.dump_ram_bank(0);
     }
 
     let end = Instant::now();

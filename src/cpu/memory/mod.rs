@@ -3,6 +3,7 @@ use std::num::Wrapping;
 use std::sync::Arc;
 use std::sync::Mutex;
 
+//This is shared memory between different components, ie. 0xff00-0xffff registers 
 pub struct Memory {
   pub data: Arc<Mutex<Box<[u8; 0x10000]>>>,
 }

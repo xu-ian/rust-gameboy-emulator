@@ -16,7 +16,7 @@ use cpal::StreamConfig;
 //Use white for channel 4
 //Use zero for no sound
 use fundsp::hacker::{
-  AudioUnit, constant, sine_hz, pulse, white, zero};
+  AudioUnit, constant, cos_hz, sine_hz, pulse, white, zero};
 
 #[derive(Clone)]
 struct Audio {
@@ -164,7 +164,7 @@ impl Audio {
       new_period += period/bottom;
     } else {
       new_period -= period/bottom;
-    } 
+    }
     self.write_memory(0xff13, (new_period & 0x00ff) as u8);
     let f14 = self.read_memory(0xff14);
     self.write_memory(0xff14, (f14 & 0xC0) + (((new_period & 0x0700) >> 8) as u8));
@@ -175,7 +175,7 @@ impl Audio {
     if on {
       self.write_memory(0xff1A, 0x80);
     } else {
-      self.write_memory(0xff1A, 0x00);      
+      self.write_memory(0xff1A, 0x00);
     }
   }
 
@@ -201,22 +201,27 @@ impl Audio {
         let duty_cycle = self.wave_duty(channel);
         let period = self.get_period(channel);
         let frequency = self.get_frequency_from_period(period);
+        //println!("Sampling Rate:{}, Frequency:{frequency}", self.sample_rate);
         self.channel_off(channel);
         let mut sound = Box::new((constant(frequency) ^ constant(duty_cycle)) >> pulse());
         if channel == 1 && self.channel_1_pace() != 0{
           self.periodic_sweep();
         }
-        //println!("{}", frequency);
         sound.set_sample_rate(self.sample_rate);
-        //return sound
+        return sound
       } else if channel == 3 && self.channel_on(channel){
         let period = self.get_period(channel);
+        for i in 0..0x10 {
+          print!("{:04x}, ", self.read_memory(0xff30+i));
+        }
+        println!("");
         let frequency = self.get_frequency_from_c3_period(period);
+        println!("Sampling Rate:{}, Frequency:{frequency}", self.sample_rate);
         let mut sound = Box::new(sine_hz(frequency));
         self.channel_off(channel);
         sound.set_sample_rate(self.sample_rate);
         //self.dump_c3();
-        return sound
+        //return sound
       } else if channel == 4 && self.channel_on(channel){
         let mut random = Box::new(white());
         self.channel_off(channel);

@@ -2,6 +2,7 @@ extern crate crossterm;
 
 use std::fs::read as read_file;
 use std::num::Wrapping;
+use std::process::exit;
 use std::sync::Arc;
 use std::sync::Mutex;
 use std::thread;
@@ -25,26 +26,44 @@ use egui::Vec2;
 use gameboy::cpu;
 
 fn main() {
-    let state = cpu::RunningState::new();
-    let memclone = state.get_memory_copy();
-    //let memclone2 = state.get_memory_copy();
     let args: Vec<String> = env::args().collect();
     if args.len() < 2 {
         panic!("Not enough input variables: please give the path to the game you wish to load")
     }
     //Loads the rom from file system to a vector
     let bytes = read_file(&args[1]).unwrap();
-    //Loads the contents of the rom into the memory
-    memclone.lock().unwrap()[..bytes.len()].clone_from_slice(bytes.as_slice());
+
+    let cart_type = bytes[0x147];
+    let rom_size = bytes[0x148];
+    let ram_size = bytes[0x149];
+    let mut state = cpu::RunningState::new_plus(cart_type, rom_size, ram_size);
+    let memclone = state.get_memory_copy();
+    let memclone2 = state.get_memory_copy();
+
+    //Loads the first 2 rom banks into the memory
+    memclone.lock().unwrap()[..0x8000].clone_from_slice(&bytes[..0x8000]);
+
+    //Loads the rom banks into bank storage
+    for bank in 0..usize::from((rom_size+1)*2) {
+        state.banks.set_rom(bank, &bytes[bank*0x4000..0x4000+bank*0x4000]);
+    }
+
+    /*for i in 0x4000..0x8000 {
+        let memory = state.memory.read_memory(i);
+        let bank = state.banks.read_rom(usize::from(i));
+        if memory != bank {
+            println!("Memory does not line up at {i:04x}. Memory: {memory}, Bank: {bank}");
+        }
+    }*/
 
     let (tx, rx): (Sender<u8>, Receiver<u8>) = mpsc::channel();
-
+    println!("Memory type: {cart_type}, ROM SIZE: {rom_size}, RAM SIZE: {ram_size}, Length: {}", bytes.len());
     thread::spawn(move || {
         gameboy::run(state, rx);
     });
 
     thread::spawn(move || {
-        //gameboy::cpu::audio::run(memclone2)
+        gameboy::cpu::audio::run(memclone2)
     });
 
     let native_options = eframe::NativeOptions::default();
