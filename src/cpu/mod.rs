@@ -67,6 +67,9 @@ pub struct RunningState {
     pub registers: Registers,
     pub memory: Memory,
     pub interrupts: bool,
+    pub m_cycles: u32,
+    pub prev_cycles: u32,
+    pub tima: u8,
     //User Input Variables
     pub joypad: [[u8; 4]; 2],
     pub input_type: u8,
@@ -83,6 +86,9 @@ impl RunningState {
             registers: Registers::new(),
             memory: Memory::new(),
             interrupts: false,
+            m_cycles: 0,
+            prev_cycles: 0,
+            tima: 0,
             joypad: [[1,1,1,1],[1,1,1,1]],
             input_type: 0x30u8,
             logging: [false, false, false, false],
@@ -95,15 +101,14 @@ impl RunningState {
             registers: Registers::new(),
             memory: Memory::new(),
             interrupts: false,
+            m_cycles: 0,
+            prev_cycles: 0,
+            tima: 0,
             joypad: [[1,1,1,1],[1,1,1,1]],
             input_type: 0x30u8,
             logging: [false, false, false, false],
             banks: banks::Banks::new(0, 0, 0),
         }
-    }
-
-    pub fn set_memory(&mut self, mem: Arc<Mutex<Box<[u8; 0x10000]>>>) {
-        self.memory.data = mem;
     }
 
     pub fn get_memory_copy(&self) -> Arc<Mutex<Box<[u8; 0x10000]>>> {
@@ -239,7 +244,6 @@ impl RunningState {
                     }
                 },
                 MBC::MBC1 => {
-                    //println!("Position: {:04x}, data: {:02x}", position, data);
                     if position < 0x2000 && data == 0xA {
                         self.banks.enable_ram();
                     } else if position >= 0x2000 && position < 0x4000 {
@@ -261,6 +265,14 @@ impl RunningState {
         } else {
             self.memory.write_memory(position, data);
         }
+    }
+
+    fn increase_m_cycles(&mut self, amount: u32) {
+        let base = Wrapping(self.m_cycles);
+        let addition = Wrapping(amount);
+        self.prev_cycles = self.m_cycles;
+        self.m_cycles = (base + addition).0;
+
     }
 
     pub fn dump_registers(&mut self) {
@@ -320,217 +332,513 @@ impl RunningState {
         }
         match instruction {
             //Saves Immediate into location specified by HL
-            Instruction::Load(6, Dest::Immediate) => self.load_immediate_to_hl(),
+            Instruction::Load(6, Dest::Immediate) => {
+                self.load_immediate_to_hl();
+                self.increase_m_cycles(3);
+            },
             //Loads Immediate into register
             Instruction::Load(register, Dest::Immediate) => {
-                self.load_immediate_to_register(register)
-            }
+                self.load_immediate_to_register(register);
+                self.increase_m_cycles(3);
+            },
             //Saves register value to HL memory location
-            Instruction::Load(6, Dest::Reg(register)) => self.save_register_to_hl(register),
+            Instruction::Load(6, Dest::Reg(register)) => {
+                self.save_register_to_hl(register);
+                self.increase_m_cycles(2);
+            },
             //Loads data from HL memory location to register
-            Instruction::Load(register, Dest::Reg(6)) => self.load_hl_to_register(register),
+            Instruction::Load(register, Dest::Reg(6)) => {
+                self.load_hl_to_register(register);
+                self.increase_m_cycles(2);
+            },
             //Copies data from one register to another
-            Instruction::Load(reg1, Dest::Reg(reg2)) => self.register_to_register_copy(reg1, reg2),
+            Instruction::Load(reg1, Dest::Reg(reg2)) => {
+                self.register_to_register_copy(reg1, reg2);
+                self.increase_m_cycles(1);
+            },
             //Loads A with memory at location BC
-            Instruction::AfBC(MemAction::Load) => self.load_bc_address_to_a(),
+            Instruction::AfBC(MemAction::Load) => {
+                self.load_bc_address_to_a();
+                self.increase_m_cycles(2);
+            },
             //Saves A at memory location BC
-            Instruction::AfBC(MemAction::Save) => self.save_a_to_bc_address(),
+            Instruction::AfBC(MemAction::Save) => {
+                self.save_a_to_bc_address();
+                self.increase_m_cycles(2);
+            },
             //Loads A with memory at location DE
-            Instruction::AfDE(MemAction::Load) => self.load_de_address_to_a(),
+            Instruction::AfDE(MemAction::Load) => {
+                self.load_de_address_to_a();
+                self.increase_m_cycles(2);
+            },
             //Saves A at memory location DE
-            Instruction::AfDE(MemAction::Save) => self.save_a_to_de_address(),
+            Instruction::AfDE(MemAction::Save) => {
+                self.save_a_to_de_address();
+                self.increase_m_cycles(2);
+            },
             //Loads A with memory at location from immediate
-            Instruction::Ann(MemAction::Load) => self.load_immediate_address_to_a(),
+            Instruction::Ann(MemAction::Load) => {
+                self.load_immediate_address_to_a();
+                self.increase_m_cycles(4);
+            },
             //Saves A at memory location from immediate
-            Instruction::Ann(MemAction::Save) => self.save_a_to_immediate_address(),
+            Instruction::Ann(MemAction::Save) => {
+                self.save_a_to_immediate_address();
+                self.increase_m_cycles(4);
+            },
             //Loads A with memory at location 0xFF00 + C
-            Instruction::AXC(MemAction::Load) => self.load_ff_c_to_a(),
+            Instruction::AXC(MemAction::Load) => {
+                self.load_ff_c_to_a();
+                self.increase_m_cycles(2);
+            },
             //Saves A at memory location 0xFF00 + C
-            Instruction::AXC(MemAction::Save) => self.save_a_to_ff_c(),
+            Instruction::AXC(MemAction::Save) => {
+                self.save_a_to_ff_c();
+                self.increase_m_cycles(2);
+            },
             //Loads A with memory at location 0xFF00 + immediate
-            Instruction::AXn(MemAction::Load) => self.load_ff_n_to_a(),
+            Instruction::AXn(MemAction::Load) => {
+                self.load_ff_n_to_a();
+                self.increase_m_cycles(3);
+            },
             //Saves A at memory location 0xFF00 + immediate
-            Instruction::AXn(MemAction::Save) => self.save_a_to_ff_n(),
+            Instruction::AXn(MemAction::Save) => {
+                self.save_a_to_ff_n();
+                self.increase_m_cycles(3);
+            },
             //Loads A with memory at location HL, then decrements HL
-            Instruction::AfHLdec(MemAction::Load) => self.load_hl_address_to_a_dec(),
+            Instruction::AfHLdec(MemAction::Load) => {
+                self.load_hl_address_to_a_dec();
+                self.increase_m_cycles(2);
+            },
             //Saves A at memory location HL, then decrements HL
-            Instruction::AfHLdec(MemAction::Save) => self.save_a_to_hl_address_dec(),
+            Instruction::AfHLdec(MemAction::Save) => {
+                self.save_a_to_hl_address_dec();
+                self.increase_m_cycles(2);
+            },
             //Loads A with memory at location HL, then increments HL
-            Instruction::AfHLinc(MemAction::Load) => self.load_hl_address_to_a_inc(),
+            Instruction::AfHLinc(MemAction::Load) => {
+                self.load_hl_address_to_a_inc();
+                self.increase_m_cycles(2);
+            },
             //Saves A at memory location HL, then increments HL
-            Instruction::AfHLinc(MemAction::Save) => self.save_a_to_hl_address_inc(),
+            Instruction::AfHLinc(MemAction::Save) => {
+                self.save_a_to_hl_address_inc();
+                self.increase_m_cycles(2);
+            },
             //Loads immediate to a register pair
-            Instruction::Loadnn(Dest::RegPair(pair)) => self.load_immediate_to_register_pair(pair),
+            Instruction::Loadnn(Dest::RegPair(pair)) => {
+                self.load_immediate_to_register_pair(pair);
+                self.increase_m_cycles(3);
+            },
             //Saves Data from stack pointer to memory address at immediate
-            Instruction::SaveSPnn => self.save_sp_to_immediate_address(),
+            Instruction::SaveSPnn => {
+                self.save_sp_to_immediate_address();
+                self.increase_m_cycles(5);
+            },
             //Sets stack pointer to HL
-            Instruction::LoadSPHL => self.load_hl_to_sp(),
+            Instruction::LoadSPHL => {
+                self.load_hl_to_sp();
+                self.increase_m_cycles(2);
+            },
             //Pushes data from register pair BC to stack
-            Instruction::PushStack(Dest::RegPair(RegisterPairs::BC)) => self.push_bc_to_stack(),
+            Instruction::PushStack(Dest::RegPair(RegisterPairs::BC)) => {
+                self.push_bc_to_stack();
+                self.increase_m_cycles(4);
+            },
             //Pushes data from register pair DE to stack
-            Instruction::PushStack(Dest::RegPair(RegisterPairs::DE)) => self.push_de_to_stack(),
+            Instruction::PushStack(Dest::RegPair(RegisterPairs::DE)) => {
+                self.push_de_to_stack();
+                self.increase_m_cycles(4);
+            },
             //Pushes data from register pair HL to stack
-            Instruction::PushStack(Dest::RegPair(RegisterPairs::HL)) => self.push_hl_to_stack(),
+            Instruction::PushStack(Dest::RegPair(RegisterPairs::HL)) => {
+                self.push_hl_to_stack();
+                self.increase_m_cycles(4);
+            },
             //Pushes data from register pair AF to stack
-            Instruction::PushStack(Dest::RegPair(RegisterPairs::AF)) => self.push_af_to_stack(),
+            Instruction::PushStack(Dest::RegPair(RegisterPairs::AF)) => {
+                self.push_af_to_stack();
+                self.increase_m_cycles(4);
+            },
             //Pops stack to register pair BC
-            Instruction::PopStack(Dest::RegPair(RegisterPairs::BC)) => self.pop_stack_to_bc(),
+            Instruction::PopStack(Dest::RegPair(RegisterPairs::BC)) => {
+                self.pop_stack_to_bc();
+                self.increase_m_cycles(3);
+            },
             //Pops stack to register pair DE
-            Instruction::PopStack(Dest::RegPair(RegisterPairs::DE)) => self.pop_stack_to_de(),
+            Instruction::PopStack(Dest::RegPair(RegisterPairs::DE)) => {
+                self.pop_stack_to_de();
+                self.increase_m_cycles(3);
+            },
             //Pops stack to register pair HL
-            Instruction::PopStack(Dest::RegPair(RegisterPairs::HL)) => self.pop_stack_to_hl(),
+            Instruction::PopStack(Dest::RegPair(RegisterPairs::HL)) => {
+                self.pop_stack_to_hl();
+                self.increase_m_cycles(3);
+            },
             //Pops stack to register pair AF
-            Instruction::PopStack(Dest::RegPair(RegisterPairs::AF)) => self.pop_stack_to_af(),
+            Instruction::PopStack(Dest::RegPair(RegisterPairs::AF)) => {
+                self.pop_stack_to_af();
+                self.increase_m_cycles(3);
+            },
             //Loads adjusted stack position to HL register pair
-            Instruction::LoadStackAdj => self.load_adjusted_stack_to_hl(),
+            Instruction::LoadStackAdj => {
+                self.load_adjusted_stack_to_hl();
+                self.increase_m_cycles(3);
+            },
             //Adds data from HL location to accumulator
-            Instruction::Add(Dest::Reg(6)) => self.add_hl_data_to_a(),
+            Instruction::Add(Dest::Reg(6)) => {
+                self.add_hl_data_to_a();
+                self.increase_m_cycles(2);
+            },
             //Adds a register to accumulator
-            Instruction::Add(Dest::Reg(register)) => self.add_register_to_a(register),
+            Instruction::Add(Dest::Reg(register)) => {
+                self.add_register_to_a(register);
+                self.increase_m_cycles(1);
+            },
             //Adds immediate to accumulator
-            Instruction::Add(Dest::Immediate) => self.add_immediate_to_a(),
+            Instruction::Add(Dest::Immediate) => {
+                self.add_immediate_to_a();
+                self.increase_m_cycles(2);
+            },
             //Adds data from HL location and carry to accumulator
-            Instruction::AddCarry(Dest::Reg(6)) => self.add_hl_data_to_a_carry(),
+            Instruction::AddCarry(Dest::Reg(6)) => {
+                self.add_hl_data_to_a_carry();
+                self.increase_m_cycles(2);
+            },
             //Adds a register and carry to accumulator
-            Instruction::AddCarry(Dest::Reg(register)) => self.add_register_to_a_carry(register),
+            Instruction::AddCarry(Dest::Reg(register)) => {
+                self.add_register_to_a_carry(register);
+                self.increase_m_cycles(1);
+            },
             //Adds immediate and carry to accumulator
-            Instruction::AddCarry(Dest::Immediate) => self.add_immediate_to_a_carry(),
+            Instruction::AddCarry(Dest::Immediate) => {
+                self.add_immediate_to_a_carry();
+                self.increase_m_cycles(2);
+            },
             //Subs data from HL location from accumulator
-            Instruction::Sub(Dest::Reg(6)) => self.sub_hl_data_to_a(),
+            Instruction::Sub(Dest::Reg(6)) => {
+                self.sub_hl_data_to_a();
+                self.increase_m_cycles(2);
+            },
             //Subs a register from accumulator
-            Instruction::Sub(Dest::Reg(register)) => self.sub_register_to_a(register),
+            Instruction::Sub(Dest::Reg(register)) => {
+                self.sub_register_to_a(register);
+                self.increase_m_cycles(1);
+            },
             //Subs immediate from accumulator
-            Instruction::Sub(Dest::Immediate) => self.sub_immediate_to_a(),
+            Instruction::Sub(Dest::Immediate) => {
+                self.sub_immediate_to_a();
+                self.increase_m_cycles(2);
+            },
             //Subs data from HL location from accumulator with carry
-            Instruction::SubCarry(Dest::Reg(6)) => self.sub_hl_data_to_a_carry(),
+            Instruction::SubCarry(Dest::Reg(6)) => {
+                self.sub_hl_data_to_a_carry();
+                self.increase_m_cycles(2);
+            },
             //Subs a register from accumulator with carry
-            Instruction::SubCarry(Dest::Reg(register)) => self.sub_register_to_a_carry(register),
+            Instruction::SubCarry(Dest::Reg(register)) => {
+                self.sub_register_to_a_carry(register);
+                self.increase_m_cycles(1);
+            },
             //Subs immediate from accumulator with carry
-            Instruction::SubCarry(Dest::Immediate) => self.sub_immediate_to_a_carry(),
+            Instruction::SubCarry(Dest::Immediate) => {
+                self.sub_immediate_to_a_carry();
+                self.increase_m_cycles(2);
+            },
             //Compares data from HL location with accumulator
-            Instruction::Compare(Dest::Reg(6)) => self.cmp_hl_data_to_a(),
+            Instruction::Compare(Dest::Reg(6)) => {
+                self.cmp_hl_data_to_a();
+                self.increase_m_cycles(2);
+            },
             //Compares data from register with accumulator
-            Instruction::Compare(Dest::Reg(register)) => self.cmp_register_to_a(register),
+            Instruction::Compare(Dest::Reg(register)) => {
+                self.cmp_register_to_a(register);
+                self.increase_m_cycles(1);
+            },
             //Compares data from immediate with accumulator
-            Instruction::Compare(Dest::Immediate) => self.cmp_immediate_to_a(),
+            Instruction::Compare(Dest::Immediate) => {
+                self.cmp_immediate_to_a();
+                self.increase_m_cycles(2);
+            },
             //Increments data at address specified by hl
-            Instruction::Inc(Dest::Reg(6)) => self.inc_hl_data(),
+            Instruction::Inc(Dest::Reg(6)) => {
+                self.inc_hl_data();
+                self.increase_m_cycles(3);
+            },
             //Increments specified register
-            Instruction::Inc(Dest::Reg(register)) => self.inc_register(register),
+            Instruction::Inc(Dest::Reg(register)) => {
+                self.inc_register(register);
+                self.increase_m_cycles(1);
+            },
             //Decrements data at address specified by hl
-            Instruction::Dec(Dest::Reg(6)) => self.dec_hl_data(),
+            Instruction::Dec(Dest::Reg(6)) => {
+                self.dec_hl_data();
+                self.increase_m_cycles(3);
+            },
             //Decrements specified register
-            Instruction::Dec(Dest::Reg(register)) => self.dec_register(register),
+            Instruction::Dec(Dest::Reg(register)) => {
+                self.dec_register(register);
+                self.increase_m_cycles(1);
+            },
             //ANDs data from HL location with accumulator
-            Instruction::AND(Dest::Reg(6)) => self.and_hl_data_to_a(),
+            Instruction::AND(Dest::Reg(6)) => {
+                self.and_hl_data_to_a();
+                self.increase_m_cycles(2);
+            },
             //ANDs data from register with accumulator
-            Instruction::AND(Dest::Reg(register)) => self.and_register_to_a(register),
+            Instruction::AND(Dest::Reg(register)) => {
+                self.and_register_to_a(register);
+                self.increase_m_cycles(1);
+            },
             //ANDs data from immediate with accumulator
-            Instruction::AND(Dest::Immediate) => self.and_immediate_to_a(),
+            Instruction::AND(Dest::Immediate) => {
+                self.and_immediate_to_a();
+                self.increase_m_cycles(2);
+            },
             //ORs data from HL location with accumulator
-            Instruction::OR(Dest::Reg(6)) => self.or_hl_data_to_a(),
+            Instruction::OR(Dest::Reg(6)) => {
+                self.or_hl_data_to_a();
+                self.increase_m_cycles(2);
+            },
             //ORs data from register with accumulator
-            Instruction::OR(Dest::Reg(register)) => self.or_register_to_a(register),
+            Instruction::OR(Dest::Reg(register)) => {
+                self.or_register_to_a(register);
+                self.increase_m_cycles(1);
+            },
             //ORs data from immediate with accumulator
-            Instruction::OR(Dest::Immediate) => self.or_immediate_to_a(),
+            Instruction::OR(Dest::Immediate) => {
+                self.or_immediate_to_a();
+                self.increase_m_cycles(2);
+            },
             //XORs data from HL location with accumulator
-            Instruction::XOR(Dest::Reg(6)) => self.xor_hl_data_to_a(),
+            Instruction::XOR(Dest::Reg(6)) => {
+                self.xor_hl_data_to_a();
+                self.increase_m_cycles(2);
+            },
             //XORs data from register with accumulator
-            Instruction::XOR(Dest::Reg(register)) => self.xor_register_to_a(register),
+            Instruction::XOR(Dest::Reg(register)) => {
+                self.xor_register_to_a(register);
+                self.increase_m_cycles(1);
+            },
             //XORs data from immediate with accumulator
-            Instruction::XOR(Dest::Immediate) => self.xor_immediate_to_a(),
+            Instruction::XOR(Dest::Immediate) => {
+                self.xor_immediate_to_a();
+                self.increase_m_cycles(2);
+            },
             //Flips carry flag, resets subtraction and halfcarry flags
-            Instruction::CCFlag => self.ccflag(),
+            Instruction::CCFlag => {
+                self.ccflag();
+                self.increase_m_cycles(1);
+            },
             //Sets carry flag, resets subtraction and halfcarry flags
-            Instruction::SCFlag => self.scflag(),
+            Instruction::SCFlag => {
+                self.scflag();
+                self.increase_m_cycles(1);
+            },
             //Sets the accumulator to decimal adjust mode
-            Instruction::DAA => self.decimal_adjust_accumulator(),
+            Instruction::DAA => {
+                self.decimal_adjust_accumulator();
+                self.increase_m_cycles(1);
+            },
             //Flips bits in accumulator then sets sub and half carry flags
-            Instruction::CmpA => self.complement_accumulator(),
+            Instruction::CmpA => {
+                self.complement_accumulator();
+                self.increase_m_cycles(2);
+            },
             //Increments a 16 bit register pair
-            Instruction::Inc16(Dest::RegPair(pair)) => self.increment_register_pair(pair),
+            Instruction::Inc16(Dest::RegPair(pair)) => {
+                self.increment_register_pair(pair);
+                self.increase_m_cycles(2);
+            },
             //Decrements a 16 bit register pair
-            Instruction::Dec16(Dest::RegPair(pair)) => self.decrement_register_pair(pair),
+            Instruction::Dec16(Dest::RegPair(pair)) => {
+                self.decrement_register_pair(pair);
+                self.increase_m_cycles(2);
+            },
             //Adds a 16 bit register pair to hl
-            Instruction::Add16(Dest::RegPair(pair)) => self.add_register_pair_to_hl(pair),
+            Instruction::Add16(Dest::RegPair(pair)) => {
+                self.add_register_pair_to_hl(pair);
+                self.increase_m_cycles(2);
+            },
             //Increases the stack pointer by an 8 bit immediate
-            Instruction::SPAddn => self.increase_stack_pointer(),
+            Instruction::SPAddn => {
+                self.increase_stack_pointer();
+                self.increase_m_cycles(4);
+            },
             //Rotates hl data left circular
-            Instruction::RotateLC(Dest::Reg(6)) => self.rotate_hl_data_left_circular(),
+            Instruction::RotateLC(Dest::Reg(6)) => {
+                self.rotate_hl_data_left_circular();
+                self.increase_m_cycles(4);
+            },
             //Rotates Register left circular
+            //TODO: Change m_cycles to 1 for accumulator
             Instruction::RotateLC(Dest::Reg(register)) => {
-                self.rotate_register_left_circular(register)
+                self.rotate_register_left_circular(register);
+                self.increase_m_cycles(2);
             }
             //Rotates hl data right circular
-            Instruction::RotateRC(Dest::Reg(6)) => self.rotate_hl_data_right_circular(),
+            Instruction::RotateRC(Dest::Reg(6)) => {
+                self.rotate_hl_data_right_circular();
+                self.increase_m_cycles(4);
+            },
             //Rotates Register right circular
+            //TODO: Change m_cycles to 1 for accumulator
             Instruction::RotateRC(Dest::Reg(register)) => {
-                self.rotate_register_right_circular(register)
+                self.rotate_register_right_circular(register);
+                self.increase_m_cycles(2);
             }
             //Rotates hl data left
-            Instruction::RotateL(Dest::Reg(6)) => self.rotate_hl_data_left(),
+            Instruction::RotateL(Dest::Reg(6)) => {
+                self.rotate_hl_data_left();
+                self.increase_m_cycles(4);
+            },
             //Rotates Register left
-            Instruction::RotateL(Dest::Reg(register)) => self.rotate_register_left(register),
+            Instruction::RotateL(Dest::Reg(register)) => {
+                self.rotate_register_left(register);
+                self.increase_m_cycles(2);
+            },
             //Rotates hl data right
-            Instruction::RotateR(Dest::Reg(6)) => self.rotate_hl_data_right(),
+            Instruction::RotateR(Dest::Reg(6)) => {
+                self.rotate_hl_data_right();
+                self.increase_m_cycles(4);
+            },
             //Rotates Register right
-            Instruction::RotateR(Dest::Reg(register)) => self.rotate_register_right(register),
+            Instruction::RotateR(Dest::Reg(register)) => {
+                self.rotate_register_right(register);
+                self.increase_m_cycles(2);
+            },
             //Shifts hl data Left Arithmetic
-            Instruction::ShiftL(Dest::Reg(6)) => self.shift_hl_data_left(),
+            Instruction::ShiftL(Dest::Reg(6)) => {
+                self.shift_hl_data_left();
+                self.increase_m_cycles(4);
+            },
             //Shifts register Left Arithmetic
-            Instruction::ShiftL(Dest::Reg(register)) => self.shift_register_left(register),
+            Instruction::ShiftL(Dest::Reg(register)) => {
+                self.shift_register_left(register);
+                self.increase_m_cycles(2);
+            },
             //Shifts hl data Right Arithmetic
-            Instruction::ShiftRArith(Dest::Reg(6)) => self.shift_hl_data_right_ari(),
+            Instruction::ShiftRArith(Dest::Reg(6)) => {
+                self.shift_hl_data_right_ari();
+                self.increase_m_cycles(4);
+            },
             //Shifts register Right Arithmetic
             Instruction::ShiftRArith(Dest::Reg(register)) => {
-                self.shift_register_right_ari(register)
+                self.shift_register_right_ari(register);
+                self.increase_m_cycles(2);
             }
             //Shifts hl data Right Logical
-            Instruction::ShiftRLog(Dest::Reg(6)) => self.shift_hl_data_right_log(),
+            Instruction::ShiftRLog(Dest::Reg(6)) => {
+                self.shift_hl_data_right_log();
+                self.increase_m_cycles(4);
+            },
             //Shifts register Right Logical
-            Instruction::ShiftRLog(Dest::Reg(register)) => self.shift_register_right_log(register),
+            Instruction::ShiftRLog(Dest::Reg(register)) => {
+                self.shift_register_right_log(register);
+                self.increase_m_cycles(2);
+            },
             //Swaps hl data nibbles
-            Instruction::SwapNibble(Dest::Reg(6)) => self.swap_hl_data_nibble(),
+            Instruction::SwapNibble(Dest::Reg(6)) => {
+                self.swap_hl_data_nibble();
+                self.increase_m_cycles(4);
+            },
             //Swaps register nibbles
-            Instruction::SwapNibble(Dest::Reg(register)) => self.swap_register_nibble(register),
+            Instruction::SwapNibble(Dest::Reg(register)) => {
+                self.swap_register_nibble(register);
+                self.increase_m_cycles(2);
+            },
             //Tests the bit in hl data and sets zero flag
-            Instruction::TestBit(bit, Dest::Reg(6)) => self.test_hl_data_bit(bit),
+            Instruction::TestBit(bit, Dest::Reg(6)) => {
+                self.test_hl_data_bit(bit);
+                self.increase_m_cycles(3);
+            },
             //Tests the bit in register and sets zero flag
-            Instruction::TestBit(bit, Dest::Reg(register)) => self.test_register_bit(bit, register),
+            Instruction::TestBit(bit, Dest::Reg(register)) => {
+                self.test_register_bit(bit, register);
+                self.increase_m_cycles(2);
+            },
             //Resets the bit in hl data
-            Instruction::ResetBit(bit, Dest::Reg(6)) => self.reset_hl_data_bit(bit),
+            Instruction::ResetBit(bit, Dest::Reg(6)) => {
+                self.reset_hl_data_bit(bit);
+                self.increase_m_cycles(4);
+            },
             //Resets the bit in register
             Instruction::ResetBit(bit, Dest::Reg(register)) => {
-                self.reset_register_bit(bit, register)
+                self.reset_register_bit(bit, register);
+                self.increase_m_cycles(2);
             }
             //Sets the bit in hl data
-            Instruction::SetBit(bit, Dest::Reg(6)) => self.set_hl_data_bit(bit),
+            Instruction::SetBit(bit, Dest::Reg(6)) => {
+                self.set_hl_data_bit(bit);
+                self.increase_m_cycles(4);
+            },
             //Sets the bit in register
-            Instruction::SetBit(bit, Dest::Reg(register)) => self.set_register_bit(bit, register),
+            Instruction::SetBit(bit, Dest::Reg(register)) => {
+                self.set_register_bit(bit, register);
+                self.increase_m_cycles(2);
+            },
             //Sets the state to read from cb instructions next
-            Instruction::Prefix => self.perform_cb_action(),
+            Instruction::Prefix => {
+                self.perform_cb_action();
+                //Unknown amount of cycles for this
+                //self.increase_m_cycles(0);
+            },
             //Jumps the program counter to 16 bit immediate
-            Instruction::Jump(Dest::Immediate) => self.jump_to_immediate(),
+            Instruction::Jump(Dest::Immediate) => {
+                self.jump_to_immediate();
+                self.increase_m_cycles(4);
+            },
             //Jumps the program counter to hl data
-            Instruction::Jump(Dest::HL) => self.jump_to_hl_data(),
+            Instruction::Jump(Dest::HL) => {
+                self.jump_to_hl_data();
+                self.increase_m_cycles(1);
+            },
             //Jumps program counter to 16 bit immediate if the iszero check matches the zero flag
-            Instruction::JumpCond(cond) => self.jump_cond_immediate(cond),
+            Instruction::JumpCond(cond) => {
+                self.jump_cond_immediate(cond);
+                self.increase_m_cycles(4);
+            },
             //Jumps program counter to relative immediate position
-            Instruction::JumpRel => self.jump_rel_immediate(),
+            Instruction::JumpRel => {
+                self.jump_rel_immediate();
+                self.increase_m_cycles(3);
+            },
             //Jumps program counter to relative immediate position if iszero matches the zero flag
-            Instruction::JumpRelCond(cond) => self.jump_rel_cond_immediate(cond),
+            Instruction::JumpRelCond(cond) => {
+                self.jump_rel_cond_immediate(cond);
+                self.increase_m_cycles(3);
+            },
             //Unconditional Function call to immediate
-            Instruction::Call => self.call_immediate(),
+            Instruction::Call => {
+                self.call_immediate();
+                self.increase_m_cycles(6);
+            },
             //Function call if iszero matches the zero flag
-            Instruction::CondCall(cond) => self.call_cond_immediate(cond),
+            Instruction::CondCall(cond) => {
+                self.call_cond_immediate(cond);
+                self.increase_m_cycles(6);
+            },
             //Returns from function call
-            Instruction::Ret => self.ret(),
+            Instruction::Ret => {
+                self.ret();
+                self.increase_m_cycles(4);
+            },
             //Conditional returns from function call if iszero matches zero flag
-            Instruction::CondRet(cond) => self.ret_cond(cond),
+            Instruction::CondRet(cond) => {
+                self.ret_cond(cond);
+                self.increase_m_cycles(5);
+            },
             //Unconditional return from function call and enables interrupts
-            Instruction::RetI => self.ret_interrupt_handler(),
+            Instruction::RetI => {
+                self.ret_interrupt_handler();
+                self.increase_m_cycles(4);
+            },
             //Function call to specific area specified by location
-            Instruction::Restart(location) => self.restart(location),
+            Instruction::Restart(location) => {
+                self.restart(location);
+                self.increase_m_cycles(4);
+            },
             //State waits until an interrupt is given
             Instruction::HALT => self.halt(),
             //State waits until a button input is given
@@ -1670,14 +1978,14 @@ impl RunningState {
     }
 
     fn halt(&mut self) {
-        println!("Called halt");
+        //println!("Called halt");
         //TODO: if IME is set, wait until an interrupt
         // If IME is not set and none are pending, resume after an interrupt
         // If IME is set and there is a pending handle it? and resume immediately
     }
 
     fn stop(&mut self) {
-        println!("Called stop!");
+        //println!("Called stop!");
         //TODO: Stops operations until a user input apparently
     }
 

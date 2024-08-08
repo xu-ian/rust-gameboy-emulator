@@ -120,9 +120,6 @@ impl Banks {
   }
 
   pub fn set_rom_bank_lower(&mut self, bank: u8) -> bool {
-    if self.banking_mode == 0 {
-      return false;
-    } 
     let new_bank = ((self.rom_bank.current_bank_number >> 5) << 5) + usize::from(bank);
     self.set_rom_bank(new_bank);
     return true;
@@ -150,6 +147,7 @@ impl Banks {
   }
 
   pub fn write_ram(&mut self, position: usize, data: u8) {
+    println!("Writing to ram");
     self.ram_bank.write_bank(position - 0xA000, data);
   }
 

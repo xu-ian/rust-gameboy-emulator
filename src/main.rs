@@ -167,17 +167,22 @@ impl MyEguiApp {
 
     fn tile_data_area(&self) -> u16 {
         let lcdc = self.read_memory(0xFF40);
-        //0x8000
-        if (lcdc & 0b0001_0000) > 0 {
+        0x8000
+        /*if (lcdc & 0b0001_0000) > 0 {
             0x8000
         } else {
             0x8800
-        }
+        }*/
     }
 
     //Gets the sprite line of a given sprite
-    fn get_sprite_line(&mut self, tile_number: u8, tile_line: u8) -> [u8; 2] {
-        let root_area = self.tile_data_area();
+    fn get_sprite_line(&mut self, tile_number: u8, tile_line: u8, object: bool) -> [u8; 2] {
+        let root_area;
+        if object {
+            root_area = 0x8000;
+        } else {
+           root_area = self.tile_data_area();
+        }
         let mut sprite = [0u8; 2];
         for i in 0..2 {
             sprite[i] = self.read_memory(
@@ -216,12 +221,13 @@ impl MyEguiApp {
     }
 
     fn bg_tile_map_area(&self) -> u16 {
-        let lcdc = self.read_memory(0xFF40);
+        0x9800
+        /*let lcdc = self.read_memory(0xFF40);
         if (lcdc & 0b0000_1000) > 0 {
             0x9C00
         } else {
             0x9800
-        }
+        }*/
     }
 
     //Returns the sprite offset read in the 32x32 grid
@@ -315,16 +321,16 @@ impl eframe::App for MyEguiApp {
                         let tile_number = self.read_background((scx + safe_i).0 / 8, (scy + ly).0 / 8);
                         
                         //Gets the line of the sprite from the sprite pointed to by the tile number
-                        let sprite_line = self.get_sprite_line(tile_number, (scy + ly).0 % 8);
+                        let sprite_line = self.get_sprite_line(tile_number, (scy + ly).0 % 8, false);
         
                         //Gets the color byte on the line of the sprite
                         self.scanline[usize::from(ly.0)][usize::from(i)] = self.get_sprite_byte(sprite_line, i % 8);
 
                         if self.window_enable() {
-                            println!("Window enabled");
+                            //println!("Window enabled");
                             let seven: Wrapping<u8> = Wrapping(7);
                             let tile_number = self.read_window((scx + safe_i - seven).0 / 8, (scy + ly).0 / 8);
-                            let _sprite_line: [u8; 2] = self.get_sprite_line(tile_number, (scy + ly).0 % 8);
+                            let _sprite_line: [u8; 2] = self.get_sprite_line(tile_number, (scy + ly).0 % 8, false);
                         }
                         
                     }
@@ -340,11 +346,14 @@ impl eframe::App for MyEguiApp {
         if self.obj_enable() {
             for n in 0..40 {
                 let object = self.read_oam(n);
-                if object[0] > 15 && object[0] < 160 && object[1] > 7 && object[1] < 160 {
+                if object[0] > 15 && object[0] < 144 && object[1] > 7 && object[1] < 160 {
                     for x in 0..8 {
                         for y in 0..8 {
                             let tile_number = object[2];
-                            let sprite_line = self.get_sprite_line(tile_number, y % 8);
+                            let sprite_line = self.get_sprite_line(tile_number, y % 8, true);
+                            if usize::from(object[0] + y - 16) >= 144 {
+                                println!("Obj:{}, Y:{}, total:{}", object[0], y, usize::from(object[0] + y - 16));
+                            }
                             self.scanline[usize::from(object[0] + y - 16)][usize::from(object[1] + x - 8)] = self.get_sprite_byte(sprite_line, x % 8);
                         }
                     }

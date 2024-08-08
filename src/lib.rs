@@ -27,7 +27,10 @@ pub fn run(mut state: RunningState, rx: Receiver<u8>) {
         read().unwrap();
       }*/
 
-    if state.registers.pc == 0x2d6 {
+    if state.registers.pc == 0x01db {
+      //state.logging[0] = true;
+      //state.logging[1] = true;
+      //println!("Main loop");
       //state.logging[0] = true;
       //state.logging[1] = true;
       //state.dump_oam();
@@ -43,6 +46,55 @@ pub fn run(mut state: RunningState, rx: Receiver<u8>) {
       let safepass = Wrapping(passed as u8);
       state.memory.write_memory(0xff04, (safex + safepass).0);
       start = end;
+    }
+
+    let tac = state.memory.read_memory(0xff07);
+    if tac & 0x04 > 0 { //If timer is enabled
+      if tac & 0x03 == 0 {
+        if state.m_cycles % 256 < state.prev_cycles % 256 {
+          match state.tima.checked_add(1) {
+            Some(_) => (),
+            None => {
+              state.tima = state.memory.read_memory(0xff06);
+              let interrupts = state.memory.read_memory(0xff0f);
+              state.memory.write_memory(0xff0f, interrupts | 0b0000_0100);
+            },
+          }
+        }
+      } else if tac & 0x03 == 1 {
+        if (state.m_cycles % 4 < state.prev_cycles % 4) || state.m_cycles - state.prev_cycles >= 4 {
+          match state.tima.checked_add(1) {
+            Some(_) => (),
+            None => {
+              state.tima = state.memory.read_memory(0xff06);
+              let interrupts = state.memory.read_memory(0xff0f);
+              state.memory.write_memory(0xff0f, interrupts | 0b0000_0100);
+            },
+          }
+        }
+      } else if tac & 0x03 == 2 {
+        if state.m_cycles % 16 < state.prev_cycles % 16 {
+          match state.tima.checked_add(1) {
+            Some(_) => (),
+            None => {
+              state.tima = state.memory.read_memory(0xff06);
+              let interrupts = state.memory.read_memory(0xff0f);
+              state.memory.write_memory(0xff0f, interrupts | 0b0000_0100);
+            },
+          }
+        }
+      } else {
+        if state.m_cycles % 64 < state.prev_cycles % 64 {
+          match state.tima.checked_add(1) {
+            Some(_) => (),
+            None => {
+              state.tima = state.memory.read_memory(0xff06);
+              let interrupts = state.memory.read_memory(0xff0f);
+              state.memory.write_memory(0xff0f, interrupts | 0b0000_0100);
+            },
+          }
+        }
+      }
     }
 
     //Reads inputs from user
